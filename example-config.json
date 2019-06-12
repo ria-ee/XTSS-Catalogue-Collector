@@ -1,0 +1,67 @@
+{
+  "output_path": "/var/www/catalogue-data/",
+  "server_url": "security-server.domain.local",
+  "client": [
+    "INST",
+    "CLASS",
+    "MEMBER_CODE",
+    "SYBSYSTEM_CODE"
+  ],
+  "instance": "INST",
+  "timeout": 5.0,
+  "server_cert": "/etc/certs/security-server.crt",
+  "client_cert": "/etc/certs/collector.crt",
+  "client_key": "/etc/keys/collector.key",
+  "thread_count": 2,
+  "wsdl_replaces": [
+    [
+      "Current time: \\d{4}\\-\\d{2}\\-\\d{2} \\d{2}:\\d{2}:\\d{2}",
+      "CURRENT_TIME_DELETED"
+    ],
+    [
+      "Genereerimise aeg: \\d{2}\\.\\d{2}\\.\\d{4} \\d{2}:\\d{2}:\\d{2}",
+      "Genereerimise aeg: DELETED"
+    ]
+  ],
+  "logging-config": {
+    "version": 1,
+    "disable_existing_loggers": true,
+    "formatters": {
+      "standard": {
+        "format": "%(asctime)s - %(threadName)s - %(levelname)s: %(message)s"
+      }
+    },
+    "handlers": {
+      "console": {
+        "level": "INFO",
+        "formatter": "standard",
+        "class": "logging.StreamHandler",
+        "stream": "ext://sys.stderr"
+      },
+      "file": {
+        "level": "INFO",
+        "formatter": "standard",
+        "class": "logging.FileHandler",
+        "filename": "/var/log/catalogue-data/collector.log",
+        "mode": "a"
+      }
+    },
+    "loggers": {
+      "": {
+        "handlers": [
+          "console"
+        ],
+        "level": "WARNING",
+        "propagate": true
+      },
+      "catalogue-collector": {
+        "handlers": [
+          "console",
+          "file"
+        ],
+        "level": "WARNING",
+        "propagate": false
+      }
+    }
+  }
+}

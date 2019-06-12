@@ -199,8 +199,7 @@ def subsystems(shared_params):
     subsystemCode).
     """
     try:
-        # ElementTree.fromstring wants encoded bytes as input (PY2)
-        root = ElementTree.fromstring(shared_params.encode('utf-8'))
+        root = ElementTree.fromstring(shared_params)
         instance = '' + root.find('./instanceIdentifier').text
         for member in root.findall('./member'):
             member_class = '' + member.find('./memberClass/code').text
@@ -218,8 +217,7 @@ def subsystems_with_membername(shared_params):
     subsystemCode, Member Name).
     """
     try:
-        # ElementTree.fromstring wants encoded bytes as input (PY2)
-        root = ElementTree.fromstring(shared_params.encode('utf-8'))
+        root = ElementTree.fromstring(shared_params)
         instance = '' + root.find('./instanceIdentifier').text
         for member in root.findall('./member'):
             member_class = '' + member.find('./memberClass/code').text
@@ -239,8 +237,7 @@ def registered_subsystems(shared_params):
     subsystemCode).
     """
     try:
-        # ElementTree.fromstring wants encoded bytes as input (PY2)
-        root = ElementTree.fromstring(shared_params.encode('utf-8'))
+        root = ElementTree.fromstring(shared_params)
         instance = '' + root.find('./instanceIdentifier').text
         for member in root.findall('./member'):
             member_class = '' + member.find('./memberClass/code').text
@@ -266,8 +263,7 @@ def subsystems_with_server(shared_params):
     subsystemCode).
     """
     try:
-        # ElementTree.fromstring wants encoded bytes as input (PY2)
-        root = ElementTree.fromstring(shared_params.encode('utf-8'))
+        root = ElementTree.fromstring(shared_params)
         instance = '' + root.find('./instanceIdentifier').text
         for member in root.findall('./member'):
             member_class = '' + member.find('./memberClass/code').text
@@ -300,8 +296,7 @@ def servers(shared_params):
     Server Address).
     """
     try:
-        # ElementTree.fromstring wants encoded bytes as input (PY2)
-        root = ElementTree.fromstring(shared_params.encode('utf-8'))
+        root = ElementTree.fromstring(shared_params)
         instance = '' + root.find('./instanceIdentifier').text
         for server in root.findall('./securityServer'):
             owner_id = server.find('./owner').text
@@ -334,8 +329,7 @@ def servers_ips(shared_params):
     Unresolved DNS names are silently ignored.
     """
     try:
-        # ElementTree.fromstring wants encoded bytes as input (PY2)
-        root = ElementTree.fromstring(shared_params.encode('utf-8'))
+        root = ElementTree.fromstring(shared_params)
         for server in root.findall('./securityServer'):
             address = server.find('address').text
             for ip in addr_ips(address):
@@ -380,8 +374,7 @@ def methods(
         envel = re.search(
             '<SOAP-ENV:Envelope.+</SOAP-ENV:Envelope>', methods_response.text, re.DOTALL)
         try:
-            # ElementTree.fromstring wants encoded bytes as input (PY2)
-            root = ElementTree.fromstring(envel.group(0).encode('utf-8'))
+            root = ElementTree.fromstring(envel.group(0))
         except AttributeError:
             raise XrdInfoError('Received incorrect response')
         if root.find('.//faultstring') is not None:
@@ -456,9 +449,7 @@ def wsdl(addr, client, service, timeout=DEFAULT_TIMEOUT, verify=False, cert=None
                 '<SOAP-ENV:Envelope.+</SOAP-ENV:Envelope>', resp.group(1), re.DOTALL)
             if envel:
                 # SOAP Fault found instead of WSDL
-                # ElementTree.fromstring wants encoded bytes as input
-                # (PY2)
-                root = ElementTree.fromstring(envel.group(0).encode('utf-8'))
+                root = ElementTree.fromstring(envel.group(0))
                 if root.find('.//faultstring') is not None:
                     raise SoapFaultError(root.find('.//faultstring').text)
             else:
@@ -466,8 +457,7 @@ def wsdl(addr, client, service, timeout=DEFAULT_TIMEOUT, verify=False, cert=None
         else:
             envel = re.search(
                 '<SOAP-ENV:Envelope.+</SOAP-ENV:Envelope>', wsdl_response.text, re.DOTALL)
-            # ElementTree.fromstring wants encoded bytes as input (PY2)
-            root = ElementTree.fromstring(envel.group(0).encode('utf-8'))
+            root = ElementTree.fromstring(envel.group(0))
             if root.find('.//faultstring') is not None:
                 raise SoapFaultError(root.find('.//faultstring').text)
             else:
@@ -481,8 +471,7 @@ def wsdl(addr, client, service, timeout=DEFAULT_TIMEOUT, verify=False, cert=None
 def wsdl_methods(wsdl_doc):
     """Return list of methods in WSDL."""
     try:
-        # ElementTree.fromstring wants encoded bytes as input (PY2)
-        root = ElementTree.fromstring(wsdl_doc.encode('utf-8'))
+        root = ElementTree.fromstring(wsdl_doc)
         for operation in root.findall('.//wsdl:binding/wsdl:operation', NS):
             version = operation.find('./xrd:version', NS).text \
                 if operation.find('./xrd:version', NS) is not None else ''

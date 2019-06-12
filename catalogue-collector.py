@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
 import queue
-from threading import Thread, Event, Lock, current_thread
+from threading import Thread, Event, Lock
 import argparse
 import hashlib
 import json
+import logging.config
 import os
 import re
 import shutil
-import sys
 import time
 import xrdinfo
 
@@ -18,82 +18,148 @@ DEFAULT_TIMEOUT = 5.0
 # Do not use threading by default
 DEFAULT_THREAD_COUNT = 1
 
-METHODS_HTML_TEMPL = u"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>All subsystems with methods and WSDL descriptions for instance "{instance}"</title>
-  <link rel="stylesheet"
-    href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
-  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
-  <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.min.js"></script>
-</head>
-<body>
-<div class="container">
-<h1>All subsystems with methods and WSDL descriptions for instance "{instance}"</h1>
-<p>Report time: {report_time}</p>
-<p><a href="history.html">History</a></p>
-<p>Latest data in <a href="index.json">JSON</a> form.</p>
-<p>This report in <a href="index_{suffix}.json">JSON</a> form.</p>
-<p>NB! Expanding all subsystems is slow operation.</p>
-<button type="button" class="btn" onClick="$('#accordion .collapse').collapse('show');">
-Expand all subsystems
-</button>
-<button type="button" class="btn" onClick="$('#accordion .collapse').collapse('hide');">
-Collapse all subsystems
-</button>
-<div id="accordion">
-{body}</div>
-</div>
-</body>
-</html>
-"""
-
-HISTORY_HTML_TEMPL = u"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>History</title>
-<link rel="stylesheet"
-  href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
-</head>
-<body>
-<div class="container">
-<h1>History</h1>
-{body}</div>
-</body>
-</html>
-"""
-
-HISTORY_HEADER = u'<h1>History</h1>\n'
-
-WSDL_REPLACES = [
+DEFAULT_WSDL_REPLACES = [
     # [Pattern, Replacement]
+    # Example:
     # "Genereerimise aeg: 22.03.2019 08:00:30"
-    [
-        'Genereerimise aeg: \\d{2}\\.\\d{2}\\.\\d{4} \\d{2}:\\d{2}:\\d{2}',
-        'Genereerimise aeg: DELETED'
-    ]
+    # [
+    #     'Genereerimise aeg: \\d{2}\\.\\d{2}\\.\\d{4} \\d{2}:\\d{2}:\\d{2}',
+    #     'Genereerimise aeg: DELETED'
+    # ]
 ]
 
+# This logger will be used before loading of logger configuration
+DEFAULT_LOGGER = {
+    'version': 1,
+    'disable_existing_loggers': True,
+    'formatters': {
+        'standard': {
+            'format': '%(asctime)s - %(threadName)s - %(levelname)s: %(message)s'
+        },
+    },
+    'handlers': {
+        'default': {
+            'level': 'WARNING',
+            'formatter': 'standard',
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stderr',
+        },
+    },
+    'loggers': {
+        '': {
+            'handlers': ['default'],
+            'level': 'WARNING',
+            'propagate': True
+        },
+        'catalogue-collector': {
+            'handlers': ['default'],
+            'level': 'WARNING',
+            'propagate': False
+        },
+    }
+}
 
-def safe_print(content):
-    """Thread safe and unicode safe debug printer."""
-    content = u'{}\n'.format(content)
-    sys.stdout.write(content)
+# Application will use this logger
+logger = logging.getLogger('catalogue-collector')
 
 
-def makedirs(path):
+def load_config(config_file):
+    try:
+        with open(config_file, 'r') as f:
+            return json.load(f)
+    except IOError as err:
+        logger.error('Cannot load configuration file "%s": %s', config_file, str(err))
+        return None
+    except json.JSONDecodeError as err:
+        logger.error('Invalid JSON configuration file "%s": %s', config_file, str(err))
+        return None
+
+
+def configure_logging(config):
+    if 'logging-config' in config:
+        logging.config.dictConfig(config['logging-config'])
+        logger.info('Logger configured')
+
+
+def set_params(config):
+    params = {
+        'path': None,
+        'url': None,
+        'client': None,
+        'instance': None,
+        'timeout': DEFAULT_TIMEOUT,
+        'verify': False,
+        'cert': None,
+        'thread_cnt': DEFAULT_THREAD_COUNT,
+        'wsdl_replaces': DEFAULT_WSDL_REPLACES,
+        'work_queue': queue.Queue(),
+        'results': {},
+        'results_lock': Lock(),
+        'shutdown': Event()
+    }
+
+    if 'output_path' in config:
+        params['path'] = config['output_path']
+        logger.info('Configuring "path": %s', params['path'])
+    else:
+        logger.error('Configuration error: Output path is not provided')
+        return None
+
+    if 'server_url' in config:
+        params['url'] = config['server_url']
+        logger.info('Configuring "url": %s', params['url'])
+    else:
+        logger.error('Configuration error: Local Security Server URL is not provided')
+        return None
+
+    if 'client' in config and len(config['client']) in (3, 4):
+        params['client'] = config['client']
+        logger.info('Configuring "client": %s', params['client'])
+    else:
+        logger.error(
+            'Configuration error: Client identifier is incorrect. Expecting list of identifiers. '
+            'Example: ["INST", "CLASS", "MEMBER_CODE", "MEMBER_CLASS"])')
+        return None
+
+    if 'instance' in config and config['instance']:
+        params['instance'] = config['instance']
+        logger.info('Configuring "instance": %s', params['instance'])
+
+    if 'timeout' in config and config['timeout'] > 0.0:
+        params['timeout'] = config['timeout']
+        logger.info('Configuring "timeout": %s', params['timeout'])
+
+    if 'server_cert' in config and config['server_cert']:
+        params['verify'] = config['server_cert']
+        logger.info('Configuring "verify": %s', params['verify'])
+
+    if 'client_cert' in config and 'client_key' in config \
+            and config['client_cert'] and config['client_key']:
+        params['cert'] = (config['client_cert'], config['client_key'])
+        logger.info('Configuring "cert": %s', params['cert'])
+
+    if 'thread_count' in config and config['thread_count'] > 0:
+        params['thread_cnt'] = config['thread_count']
+        logger.info('Configuring "thread_cnt": %s', params['thread_cnt'])
+
+    if 'wsdl_replaces' in config:
+        params['wsdl_replaces'] = config['wsdl_replaces']
+        logger.info('Configuring "wsdl_replaces": %s', params['wsdl_replaces'])
+
+    logger.info('Configuration done')
+
+    return params
+
+
+def make_dirs(path):
     try:
         os.makedirs(path)
     except OSError:
         pass
     if not os.path.exists(path):
-        safe_print(u'Cannot create directory "{}"'.format(path))
-        exit(0)
+        logger.error('Cannot create directory "%s"', path)
+        return False
+    return True
 
 
 def hash_wsdls(path):
@@ -102,16 +168,16 @@ def hash_wsdls(path):
         s = re.search('^(\\d+)\\.wsdl$', file_name)
         if s:
             # Reading as bytes to avoid line ending conversion
-            with open(u'{}/{}'.format(path, file_name), 'rb') as fh:
+            with open('{}/{}'.format(path, file_name), 'rb') as fh:
                 wsdl = fh.read()
             hashes[file_name] = hashlib.md5(wsdl).hexdigest()
     return hashes
 
 
-def save_wsdl(path, hashes, wsdl):
+def save_wsdl(path, hashes, wsdl, wsdl_replaces):
     # Replacing dynamically generated comments in WSDL to avoid new WSDL
     # creation because of comments.
-    for wsdl_replace in WSDL_REPLACES:
+    for wsdl_replace in wsdl_replaces:
         wsdl = re.sub(wsdl_replace[0], wsdl_replace[1], wsdl)
     wsdl_hash = hashlib.md5(wsdl.encode('utf-8')).hexdigest()
     max_wsdl = -1
@@ -124,9 +190,9 @@ def save_wsdl(path, hashes, wsdl):
             if int(s.group(1)) > max_wsdl:
                 max_wsdl = int(s.group(1))
     # Creating new file
-    new_file = u'{}.wsdl'.format(int(max_wsdl) + 1)
+    new_file = '{}.wsdl'.format(int(max_wsdl) + 1)
     # Writing as bytes to avoid line ending conversion
-    with open(u'{}/{}'.format(path, new_file), 'wb') as f:
+    with open('{}/{}'.format(path, new_file), 'wb') as f:
         f.write(wsdl.encode('utf-8'))
     hashes[new_file] = wsdl_hash
     return new_file, hashes
@@ -146,8 +212,8 @@ def worker(params):
         wsdl_rel_path = ''
         try:
             wsdl_rel_path = xrdinfo.stringify(subsystem)
-            wsdl_path = u'{}/{}'.format(params['path'], wsdl_rel_path)
-            makedirs(wsdl_path)
+            wsdl_path = '{}/{}'.format(params['path'], wsdl_rel_path)
+            make_dirs(wsdl_path)
             hashes = hash_wsdls(wsdl_path)
 
             method_index = {}
@@ -163,9 +229,7 @@ def worker(params):
                 if skip_methods:
                     # Skipping, because previous getWsdl request timed
                     # out
-                    if params['verbose']:
-                        safe_print(u'{}: {} - SKIPPING\n'.format(
-                            current_thread().getName(), xrdinfo.stringify(method)))
+                    logger.info('%s - SKIPPING', xrdinfo.stringify(method))
                     method_index[xrdinfo.stringify(method)] = 'SKIPPED'
                     continue
 
@@ -176,35 +240,34 @@ def worker(params):
                 except xrdinfo.RequestTimeoutError:
                     # Skipping all following requests to that subsystem
                     skip_methods = True
-                    if params['verbose']:
-                        safe_print(u'{}: {} - TIMEOUT\n'.format(
-                            current_thread().getName(), xrdinfo.stringify(method)))
+                    logger.info('%s - TIMEOUT', xrdinfo.stringify(method))
                     method_index[xrdinfo.stringify(method)] = 'TIMEOUT'
                     continue
                 except xrdinfo.XrdInfoError as e:
-                    if params['verbose']:
-                        safe_print(u'{}: {} - ERROR:\n{}\n'.format(
-                            current_thread().getName(), xrdinfo.stringify(method), e))
-                    method_index[xrdinfo.stringify(method)] = ''
+                    if str(e) == 'SoapFault: Service is a REST service and does not have a WSDL':
+                        # We do not want to spam messages about REST services
+                        logger.debug('%s: %s', xrdinfo.stringify(method), e)
+                        method_index[xrdinfo.stringify(method)] = 'REST'
+                    else:
+                        logger.info('%s: %s', xrdinfo.stringify(method), e)
+                        method_index[xrdinfo.stringify(method)] = ''
                     continue
 
-                wsdl_name, hashes = save_wsdl(wsdl_path, hashes, wsdl)
-                txt = u'{}: {}\n'.format(current_thread().getName(), wsdl_name)
+                wsdl_name, hashes = save_wsdl(wsdl_path, hashes, wsdl, params['wsdl_replaces'])
+                txt = '{}'.format(wsdl_name)
                 try:
                     for wsdl_method in xrdinfo.wsdl_methods(wsdl):
                         method_full_name = xrdinfo.stringify(subsystem + wsdl_method)
-                        method_index[method_full_name] = u'{}/{}'.format(wsdl_rel_path, wsdl_name)
-                        txt = txt + u'    {}\n'.format(method_full_name)
+                        method_index[method_full_name] = '{}/{}'.format(wsdl_rel_path, wsdl_name)
+                        txt = txt + '\n    {}'.format(method_full_name)
                 except xrdinfo.XrdInfoError as e:
-                    txt = txt + u'WSDL parsing failed: {}\n'.format(e)
+                    txt = txt + '\nWSDL parsing failed: {}'.format(e)
                     method_index[xrdinfo.stringify(method)] = ''
-                if params['verbose']:
-                    safe_print(txt)
+                logger.info(txt)
 
                 if xrdinfo.stringify(method) not in method_index:
-                    # if params['verbose']:
-                    safe_print(u'{}: {} - Method was not found in returned WSDL!'.format(
-                        current_thread().getName(), xrdinfo.stringify(method)))
+                    logger.warning('{} - Method was not found in returned WSDL!'.format(
+                        xrdinfo.stringify(method)))
                     method_index[xrdinfo.stringify(method)] = ''
 
             with params['results_lock']:
@@ -216,15 +279,13 @@ def worker(params):
                 params['results'][wsdl_rel_path] = {
                     'methods': {},
                     'ok': False}
-            if params['verbose']:
-                safe_print(u'{}: {} - ERROR:\n{}\n'.format(
-                    current_thread().getName(), xrdinfo.stringify(subsystem), e))
+            logger.info('%s: %s', xrdinfo.stringify(subsystem), e)
         except Exception as e:
             with params['results_lock']:
                 params['results'][wsdl_rel_path] = {
                     'methods': {},
                     'ok': False}
-            safe_print(u'{}: {}: {}\n'.format(current_thread().getName(), type(e).__name__, e))
+            logger.warning('%s: %s', type(e).__name__, e)
         finally:
             params['work_queue'].task_done()
 
@@ -234,88 +295,38 @@ def sort_by_time(item):
 
 
 def main():
+    logging.config.dictConfig(DEFAULT_LOGGER)
+
     parser = argparse.ArgumentParser(
-        description='X-Road getWsdl request to all members.',
+        description='Collect WSDL service descriptions from X-Road members.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='By default peer TLS certificate is not validated.'
     )
     parser.add_argument(
-        'url', metavar='SERVER_URL',
-        help='URL of local Security Server accepting X-Road requests.')
-    parser.add_argument(
-        'client', metavar='CLIENT',
-        help='slash separated Client identifier (e.g. '
-             '"INSTANCE/MEMBER_CLASS/MEMBER_CODE/SUBSYSTEM_CODE" '
-             'or "INSTANCE/MEMBER_CLASS/MEMBER_CODE").')
-    parser.add_argument('path', metavar='PATH', help='path for storing results.')
-    parser.add_argument('-v', help='verbose output', action='store_true')
-    parser.add_argument('-t', metavar='TIMEOUT', help='timeout for HTTP query', type=float)
-    parser.add_argument(
-        '--threads', metavar='THREADS', help='amount of threads to use', type=int, default=0)
-    parser.add_argument(
-        '--verify', metavar='CERT_PATH',
-        help='validate peer TLS certificate using CA certificate file.')
-    parser.add_argument(
-        '--cert', metavar='CERT_PATH', help='use TLS certificate for HTTPS requests.')
-    parser.add_argument('--key', metavar='KEY_PATH', help='private key for TLS certificate.')
-    parser.add_argument(
-        '--instance', metavar='INSTANCE',
-        help='use this instance instead of local X-Road instance.')
-    parser.add_argument('--no-html', action='store_true', help='disable HTML generation.')
+        'config', metavar='CONFIG_FILE',
+        help='Configuration file')
     args = parser.parse_args()
 
-    params = {
-        'verbose': False,
-        'path': args.path,
-        'url': args.url,
-        'client': args.client,
-        'instance': None,
-        'timeout': DEFAULT_TIMEOUT,
-        'verify': False,
-        'cert': None,
-        'thread_cnt': DEFAULT_THREAD_COUNT,
-        'work_queue': queue.Queue(),
-        'results': {},
-        'results_lock': Lock(),
-        'shutdown': Event(),
-        'html': True
-    }
-
-    if args.v:
-        params['verbose'] = True
-
-    makedirs(params['path'])
-
-    params['client'] = params['client'].split('/')
-    if not (len(params['client']) in (3, 4)):
-        safe_print(u'Client name is incorrect: "{}"'.format(args.client))
+    config = load_config(args.config)
+    if config is None:
         exit(1)
 
-    if args.instance:
-        params['instance'] = args.instance
+    configure_logging(config)
 
-    if args.t:
-        params['timeout'] = args.t
+    params = set_params(config)
+    if params is None:
+        exit(1)
 
-    if args.verify:
-        params['verify'] = args.verify
-
-    if args.cert and args.key:
-        params['cert'] = (args.cert, args.key)
-
-    if args.threads and args.threads > 0:
-        params['thread_cnt'] = args.threads
-
-    if args.no_html:
-        params['html'] = False
+    if not make_dirs(params['path']):
+        exit(1)
 
     shared_params = None
     try:
         shared_params = xrdinfo.shared_params_ss(
-            addr=args.url, instance=params['instance'], timeout=params['timeout'],
+            addr=params['url'], instance=params['instance'], timeout=params['timeout'],
             verify=params['verify'], cert=params['cert'])
     except xrdinfo.XrdInfoError as e:
-        safe_print(u'Cannot download Global Configuration: {}'.format(e))
+        logger.error('Cannot download Global Configuration: %s', e)
         exit(1)
 
     # Create and start new threads
@@ -331,7 +342,7 @@ def main():
         for subsystem in xrdinfo.registered_subsystems(shared_params):
             params['work_queue'].put(subsystem)
     except xrdinfo.XrdInfoError as e:
-        safe_print(u'Cannot process Global Configuration: {}'.format(e))
+        logger.error('Cannot process Global Configuration: %s', e)
         exit(1)
 
     # Block until all tasks in queue are done
@@ -344,34 +355,18 @@ def main():
 
     results = params['results']
 
-    body = ''
     card_nr = 0
     json_data = []
     for subsystem_key in sorted(results.keys()):
         card_nr += 1
-        subsystem_result = results[subsystem_key]
+        subsystem_result = results[subsystem_key]  # type: dict
         methods = subsystem_result['methods']
         if subsystem_result['ok'] and len(methods) > 0:
             subsystem_status = 'ok'
-            subsystem_badge = u''
         elif subsystem_result['ok']:
             subsystem_status = 'empty'
-            subsystem_badge = u' <span class="badge badge-secondary">Empty</span>'
         else:
             subsystem_status = 'error'
-            subsystem_badge = u' <span class="badge badge-danger">Error</span>'
-        body += u'<div class="card">\n' \
-                u'<div class="card-header">\n' \
-                u'<a class="card-link" data-toggle="collapse" href="#collapse{}">\n' \
-                u'{}{}\n' \
-                u'</a>\n' \
-                u'</div>\n'.format(card_nr, subsystem_key, subsystem_badge)
-        body += u'<div id="collapse{}" class="collapse">\n' \
-                u'<div class="card-body">\n'.format(card_nr)
-        if subsystem_status == 'empty':
-            body += u'<p>No services found</p>'
-        elif subsystem_status == 'error':
-            body += u'<p>Error while getting list of services</p>'
         subsystem = subsystem_key.split('/')
         json_subsystem = {
             'xRoadInstance': subsystem[0],
@@ -388,91 +383,49 @@ def main():
                 'serviceVersion': method[5],
             }
             if methods[method_key] == 'SKIPPED':
-                body += u'<p>{} <span class="badge badge-warning">WSDL skipped due to ' \
-                        u'previous Timeout</span></p>\n'.format(method_key)
                 json_method['methodStatus'] = 'SKIPPED'
                 json_method['wsdl'] = ''
             elif methods[method_key] == 'TIMEOUT':
-                body += u'<p>{} <span class="badge badge-danger">WSDL query timed out' \
-                        u'</span></p>\n'.format(method_key)
                 json_method['methodStatus'] = 'TIMEOUT'
                 json_method['wsdl'] = ''
+            elif methods[method_key] == 'REST':
+                json_method['methodStatus'] = 'REST'
+                json_method['wsdl'] = ''
             elif methods[method_key]:
-                body += u'<p>{}: <a href="{}" class="badge badge-success">WSDL</a></p>\n'.format(
-                    method_key, methods[method_key])
                 json_method['methodStatus'] = 'OK'
                 json_method['wsdl'] = methods[method_key]
             else:
-                body += u'<p>{} <span class="badge badge-danger">Error while downloading ' \
-                        u'or parsing of WSDL</span></p>\n'.format(method_key)
                 json_method['methodStatus'] = 'ERROR'
                 json_method['wsdl'] = ''
 
             json_subsystem['methods'].append(json_method)
-        # Closing: card-body, collapseX, card
-        body += u'</div>\n' \
-                u'</div>\n' \
-                u'</div>\n'
         json_data.append(json_subsystem)
 
     report_time = time.localtime(time.time())
     formatted_time = time.strftime('%Y-%m-%d %H:%M:%S', report_time)
     suffix = time.strftime('%Y%m%d%H%M%S', report_time)
 
-    s = re.search('<instanceIdentifier>(.+?)</instanceIdentifier>', shared_params)
-    if s and s.group(1):
-        instance = s.group(1)
-    else:
-        instance = u'???'
-
     # JSON output
-    with open(u'{}/index_{}.json'.format(args.path, suffix), 'w') as f:
+    with open('{}/index_{}.json'.format(params['path'], suffix), 'w') as f:
         json.dump(json_data, f, indent=2, ensure_ascii=False)
 
     json_history = []
     try:
-        with open(u'{}/history.json'.format(args.path), 'r') as f:
+        with open('{}/history.json'.format(params['path']), 'r') as f:
             json_history = json.load(f)
     except IOError:
-        # Cannot open history.html
-        pass
+        logger.info('History file history.json not found')
 
-    json_history.append({'reportTime': formatted_time, 'reportPath': u'index_{}.json'.format(
+    json_history.append({'reportTime': formatted_time, 'reportPath': 'index_{}.json'.format(
         suffix)})
     json_history.sort(key=sort_by_time, reverse=True)
 
-    with open(u'{}/history.json'.format(args.path), 'w') as f:
+    with open('{}/history.json'.format(params['path']), 'w') as f:
         json.dump(json_history, f, indent=2, ensure_ascii=False)
 
     # Replace index.json with latest report
-    shutil.copy(u'{}/index_{}.json'.format(args.path, suffix), u'{}/index.json'.format(args.path))
-
-    # HTML output
-    if params['html']:
-        html = METHODS_HTML_TEMPL.format(
-            instance=instance, report_time=formatted_time, suffix=suffix, body=body)
-        with open(u'{}/index_{}.html'.format(args.path, suffix), 'w') as f:
-            f.write(html)
-
-        history_item = u'<p><a href="{}">{}</a></p>\n'.format(
-            u'index_{}.html'.format(suffix), formatted_time)
-        try:
-            html = u''
-            with open(u'{}/history.html'.format(args.path), 'r') as f:
-                for line in f:
-                    if line == HISTORY_HEADER:
-                        line = line + history_item
-                    html = html + line
-        except IOError:
-            # Cannot open history.html
-            html = HISTORY_HTML_TEMPL.format(body=history_item)
-
-        with open(u'{}/history.html'.format(args.path), 'w') as f:
-            f.write(html)
-
-        # Replace index.html with latest report
-        shutil.copy(u'{}/index_{}.html'.format(args.path, suffix), u'{}/index.html'.format(
-            args.path))
+    shutil.copy(
+        '{}/index_{}.json'.format(params['path'], suffix), '{}/index.json'.format(params['path']))
 
 
 if __name__ == '__main__':

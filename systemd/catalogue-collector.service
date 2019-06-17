@@ -1,0 +1,11 @@
+[Unit]
+Description=Update X-Road catalogue
+After=network.target
+
+[Service]
+Type=simple
+User=catalogue-collector
+Group=catalogue-collector
+WorkingDirectory=/opt/catalogue-collector/
+Environment="PATH=/opt/catalogue-collector/venv/bin"
+ExecStart=/opt/catalogue-collector/venv/bin/python catalogue-collector.py config.json

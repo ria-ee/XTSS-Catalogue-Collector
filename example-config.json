@@ -23,6 +23,20 @@
       "Genereerimise aeg: DELETED"
     ]
   ],
+  "excluded_member_codes": [
+    "90000000",
+    "90000001"
+  ],
+  "excluded_subsystem_codes": [
+    [
+      "90000002",
+      "secret1"
+    ],
+    [
+      "90000003",
+      "secret2"
+    ]
+  ],
   "logging-config": {
     "version": 1,
     "disable_existing_loggers": true,

@@ -97,6 +97,8 @@ def set_params(config):
         'cert': None,
         'thread_cnt': DEFAULT_THREAD_COUNT,
         'wsdl_replaces': DEFAULT_WSDL_REPLACES,
+        'excluded_member_codes': [],
+        'excluded_subsystem_codes': [],
         'work_queue': queue.Queue(),
         'results': {},
         'results_lock': Lock(),
@@ -150,6 +152,14 @@ def set_params(config):
     if 'wsdl_replaces' in config:
         params['wsdl_replaces'] = config['wsdl_replaces']
         LOGGER.info('Configuring "wsdl_replaces": %s', params['wsdl_replaces'])
+
+    if 'excluded_member_codes' in config:
+        params['excluded_member_codes'] = config['excluded_member_codes']
+        LOGGER.info('Configuring "excluded_member_codes": %s', params['excluded_member_codes'])
+
+    if 'excluded_subsystem_codes' in config:
+        params['excluded_subsystem_codes'] = config['excluded_subsystem_codes']
+        LOGGER.info('Configuring "excluded_subsystem_codes": %s', params['excluded_subsystem_codes'])
 
     LOGGER.info('Configuration done')
 
@@ -213,6 +223,7 @@ def worker(params):
         # the worker.
         try:
             subsystem = params['work_queue'].get(True, 0.1)
+            LOGGER.info('Start processing %s', xrdinfo.stringify(subsystem))
         except queue.Empty:
             if params['shutdown'].is_set():
                 return
@@ -427,6 +438,12 @@ def main():
     # Populate the queue
     try:
         for subsystem in xrdinfo.registered_subsystems(shared_params):
+            if subsystem[2] in params['excluded_member_codes']:
+                LOGGER.info('Skipping excluded member %s', xrdinfo.stringify(subsystem))
+                continue
+            if [subsystem[2], subsystem[3]] in params['excluded_subsystem_codes']:
+                LOGGER.info('Skipping excluded subsystem %s', xrdinfo.stringify(subsystem))
+                continue
             params['work_queue'].put(subsystem)
     except xrdinfo.XrdInfoError as err:
         LOGGER.error('Cannot process Global Configuration: %s', err)

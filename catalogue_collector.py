@@ -159,7 +159,8 @@ def set_params(config):
 
     if 'excluded_subsystem_codes' in config:
         params['excluded_subsystem_codes'] = config['excluded_subsystem_codes']
-        LOGGER.info('Configuring "excluded_subsystem_codes": %s', params['excluded_subsystem_codes'])
+        LOGGER.info(
+            'Configuring "excluded_subsystem_codes": %s', params['excluded_subsystem_codes'])
 
     LOGGER.info('Configuration done')
 
@@ -304,7 +305,7 @@ def worker(params):
                 params['results'][wsdl_rel_path] = {
                     'methods': {},
                     'ok': False}
-            LOGGER.warning('%s: %s', type(err).__name__, err)
+            LOGGER.warning('Unexpected exception: %s: %s', type(err).__name__, err)
         finally:
             params['work_queue'].task_done()
 

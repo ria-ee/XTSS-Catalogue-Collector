@@ -315,14 +315,27 @@ def sort_by_time(item):
     return item['reportTime']
 
 
+def all_results_failed(results):
+    """Check if all results have failed status"""
+    for result in results.values():
+        if result['ok']:
+            # Found non-failed result
+            return False
+    # All results failed
+    return True
+
+
 def process_results(params):
     """Process results collected by worker threads"""
     results = params['results']
 
-    card_nr = 0
+    if all_results_failed(results):
+        # Skipping this version
+        LOGGER.error('All subsystems failed, skipping this catalogue version!')
+        return
+
     json_data = []
     for subsystem_key in sorted(results.keys()):
-        card_nr += 1
         subsystem_result = results[subsystem_key]  # type: dict
         methods = subsystem_result['methods']
         if subsystem_result['ok'] and methods:

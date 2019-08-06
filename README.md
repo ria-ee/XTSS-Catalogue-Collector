@@ -9,17 +9,17 @@ Create a configuration file for your X-Road instance using an example configurat
 Configuration parameters:
 * `output_path` - output directory for collected data;
 * `server_url` - address of your security server;
-* client - array of X-Road client identifiers;
-* instance - X-Road instance to collect data from;
-* timeout - X-Road query timeout;
-* server_cert - optional TLS certificate of your security server for verification;
-* client_cert - optional application TLS certificate for authentication with security server;
-* client_key - optional application key for authentication with security server;
-* thread_count - amount of parallel threads to use;
-* wsdl_replaces - replace metadata like creation timestamp in WSDLs to avoid duplicates;
-* excluded_member_codes - exclude certain members who are permanently in faulty state or should not be queried for any other reasons;
-* excluded_subsystem_codes - exclude certain members who are permanently in faulty state or should not be queried for any other reasons;
-* logging-config - logging configuration passed to logging.config.dictConfig(). You can read more about Python3 logging here: [https://docs.python.org/3/library/logging.config.html](https://docs.python.org/3/library/logging.config.html).
+* `client` - array of X-Road client identifiers;
+* `instance` - X-Road instance to collect data from;
+* `timeout` - X-Road query timeout;
+* `server_cert` - optional TLS certificate of your security server for verification;
+* `client_cert` - optional application TLS certificate for authentication with security server;
+* `client_key` - optional application key for authentication with security server;
+* `thread_count` - amount of parallel threads to use;
+* `wsdl_replaces` - replace metadata like creation timestamp in WSDLs to avoid duplicates;
+* `excluded_member_codes` - exclude certain members who are permanently in faulty state or should not be queried for any other reasons;
+* `excluded_subsystem_codes` - exclude certain members who are permanently in faulty state or should not be queried for any other reasons;
+* `logging-config` - logging configuration passed to logging.config.dictConfig(). You can read more about Python3 logging here: [https://docs.python.org/3/library/logging.config.html](https://docs.python.org/3/library/logging.config.html).
 
 ## Installing python venv
 

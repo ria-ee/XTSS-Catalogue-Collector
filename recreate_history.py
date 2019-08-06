@@ -34,14 +34,15 @@ def main():
     args = parser.parse_args()
 
     if not os.path.exists(args.path):
-        print(u'Directory not found "{}"'.format(args.path))
+        print('Directory not found "{}"'.format(args.path))
         exit(1)
 
     reports = get_catalogue_reports(args.path)
     if len(reports):
-        with open(u'{}/history.json'.format(args.path), 'w') as f:
+        with open(os.path.join(args.path, 'history.json'), 'w') as f:
             json.dump(reports, f, indent=2, ensure_ascii=False)
-        print('Writing {} reports to {}/history.json'.format(len(reports), args.path))
+        print('Writing {} reports to {}'.format(
+            len(reports), os.path.join(args.path, 'history.json')))
     else:
         print('No JSON reports found in directory: {}'.format(args.path))
 

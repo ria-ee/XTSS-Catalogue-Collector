@@ -1,6 +1,6 @@
 {
   "output_path": "/var/www/catalogue-data/",
-  "server_url": "security-server.domain.local",
+  "server_url": "https://security-server.domain.local",
   "client": [
     "INST",
     "CLASS",

@@ -224,14 +224,14 @@ def worker(params):
         # the worker.
         try:
             subsystem = params['work_queue'].get(True, 0.1)
-            LOGGER.info('Start processing %s', xrdinfo.stringify(subsystem))
+            LOGGER.info('Start processing %s', xrdinfo.identifier(subsystem))
         except queue.Empty:
             if params['shutdown'].is_set():
                 return
             continue
         wsdl_rel_path = ''
         try:
-            wsdl_rel_path = xrdinfo.stringify(subsystem)
+            wsdl_rel_path = xrdinfo.identifier(subsystem)
             wsdl_path = '{}/{}'.format(params['path'], wsdl_rel_path)
             make_dirs(wsdl_path)
             hashes = hash_wsdls(wsdl_path)
@@ -242,15 +242,15 @@ def worker(params):
                     addr=params['url'], client=params['client'], producer=subsystem,
                     method='listMethods', timeout=params['timeout'], verify=params['verify'],
                     cert=params['cert'])):
-                if xrdinfo.stringify(method) in method_index:
+                if xrdinfo.identifier(method) in method_index:
                     # Method already found in previous WSDL's
                     continue
 
                 if skip_methods:
                     # Skipping, because previous getWsdl request timed
                     # out
-                    LOGGER.info('%s - SKIPPING', xrdinfo.stringify(method))
-                    method_index[xrdinfo.stringify(method)] = 'SKIPPED'
+                    LOGGER.info('%s - SKIPPING', xrdinfo.identifier(method))
+                    method_index[xrdinfo.identifier(method)] = 'SKIPPED'
                     continue
 
                 try:
@@ -260,35 +260,35 @@ def worker(params):
                 except xrdinfo.RequestTimeoutError:
                     # Skipping all following requests to that subsystem
                     skip_methods = True
-                    LOGGER.info('%s - TIMEOUT', xrdinfo.stringify(method))
-                    method_index[xrdinfo.stringify(method)] = 'TIMEOUT'
+                    LOGGER.info('%s - TIMEOUT', xrdinfo.identifier(method))
+                    method_index[xrdinfo.identifier(method)] = 'TIMEOUT'
                     continue
                 except xrdinfo.XrdInfoError as err:
                     if str(err) == 'SoapFault: Service is a REST service and does not have a WSDL':
                         # We do not want to spam messages about REST services
-                        LOGGER.debug('%s: %s', xrdinfo.stringify(method), err)
-                        method_index[xrdinfo.stringify(method)] = 'REST'
+                        LOGGER.debug('%s: %s', xrdinfo.identifier(method), err)
+                        method_index[xrdinfo.identifier(method)] = 'REST'
                     else:
-                        LOGGER.info('%s: %s', xrdinfo.stringify(method), err)
-                        method_index[xrdinfo.stringify(method)] = ''
+                        LOGGER.info('%s: %s', xrdinfo.identifier(method), err)
+                        method_index[xrdinfo.identifier(method)] = ''
                     continue
 
                 wsdl_name, hashes = save_wsdl(wsdl_path, hashes, wsdl, params['wsdl_replaces'])
                 txt = '{}'.format(wsdl_name)
                 try:
                     for wsdl_method in xrdinfo.wsdl_methods(wsdl):
-                        method_full_name = xrdinfo.stringify(subsystem + wsdl_method)
+                        method_full_name = xrdinfo.identifier(subsystem + wsdl_method)
                         method_index[method_full_name] = '{}/{}'.format(wsdl_rel_path, wsdl_name)
                         txt = txt + '\n    {}'.format(method_full_name)
                 except xrdinfo.XrdInfoError as err:
                     txt = txt + '\nWSDL parsing failed: {}'.format(err)
-                    method_index[xrdinfo.stringify(method)] = ''
+                    method_index[xrdinfo.identifier(method)] = ''
                 LOGGER.info(txt)
 
-                if xrdinfo.stringify(method) not in method_index:
+                if xrdinfo.identifier(method) not in method_index:
                     LOGGER.warning(
-                        '%s - Method was not found in returned WSDL!', xrdinfo.stringify(method))
-                    method_index[xrdinfo.stringify(method)] = ''
+                        '%s - Method was not found in returned WSDL!', xrdinfo.identifier(method))
+                    method_index[xrdinfo.identifier(method)] = ''
 
             with params['results_lock']:
                 params['results'][wsdl_rel_path] = {
@@ -299,7 +299,7 @@ def worker(params):
                 params['results'][wsdl_rel_path] = {
                     'methods': {},
                     'ok': False}
-            LOGGER.info('%s: %s', xrdinfo.stringify(subsystem), err)
+            LOGGER.info('%s: %s', xrdinfo.identifier(subsystem), err)
         except Exception as err:
             with params['results_lock']:
                 params['results'][wsdl_rel_path] = {
@@ -453,10 +453,10 @@ def main():
     try:
         for subsystem in xrdinfo.registered_subsystems(shared_params):
             if subsystem[2] in params['excluded_member_codes']:
-                LOGGER.info('Skipping excluded member %s', xrdinfo.stringify(subsystem))
+                LOGGER.info('Skipping excluded member %s', xrdinfo.identifier(subsystem))
                 continue
             if [subsystem[2], subsystem[3]] in params['excluded_subsystem_codes']:
-                LOGGER.info('Skipping excluded subsystem %s', xrdinfo.stringify(subsystem))
+                LOGGER.info('Skipping excluded subsystem %s', xrdinfo.identifier(subsystem))
                 continue
             params['work_queue'].put(subsystem)
     except xrdinfo.XrdInfoError as err:

@@ -3,11 +3,12 @@
 """X-Road informational module."""
 
 __all__ = [
-    'XrdInfoError', 'RequestTimeoutError', 'SoapFaultError', 'shared_params_ss',
-    'shared_params_cs', 'subsystems', 'subsystems_with_membername', 'registered_subsystems',
-    'subsystems_with_server', 'servers', 'addr_ips', 'servers_ips', 'methods', 'methods_rest',
-    'wsdl', 'wsdl_methods', 'openapi', 'identifier', 'identifier_parts']
-__version__ = '1.0'
+    'XrdInfoError', 'RequestTimeoutError', 'SoapFaultError', 'NotOpenapiServiceError',
+    'OpenapiReadError', 'shared_params_ss', 'shared_params_cs', 'subsystems',
+    'subsystems_with_membername', 'registered_subsystems', 'subsystems_with_server', 'servers',
+    'addr_ips', 'servers_ips', 'methods', 'methods_rest', 'wsdl', 'wsdl_methods', 'openapi',
+    'openapi_endpoints', 'identifier', 'identifier_parts']
+__version__ = '1.1'
 __author__ = 'Vitali Stupin'
 
 import json
@@ -19,6 +20,7 @@ import zipfile
 import xml.etree.ElementTree as ElementTree
 from io import BytesIO
 import requests
+import yaml
 
 XRD_REST_VERSION = 'r1'
 
@@ -126,6 +128,16 @@ class SoapFaultError(XrdInfoError):
         super(SoapFaultError, self).__init__('SoapFault: {}'.format(msg))
 
 
+class NotOpenapiServiceError(XrdInfoError):
+    """Requested service does not have OpenAPI description."""
+    pass
+
+
+class OpenapiReadError(XrdInfoError):
+    """Producer Security Server failed to read OpenAPI description."""
+    pass
+
+
 def shared_params_ss(addr, instance=None, timeout=DEFAULT_TIMEOUT, verify=False, cert=None):
     """Get shared-params.xml content from local Security Server.
     By default return info about local X-Road instance.
@@ -209,7 +221,7 @@ def subsystems(shared_params):
             member_code = '' + member.find('./memberCode').text
             for subsystem in member.findall('./subsystem'):
                 subsystem_code = '' + subsystem.find('./subsystemCode').text
-                yield (instance, member_class, member_code, subsystem_code)
+                yield instance, member_class, member_code, subsystem_code
     except Exception as e:
         raise XrdInfoError(e)
 
@@ -228,7 +240,7 @@ def subsystems_with_membername(shared_params):
             member_name = '' + member.find('./name').text
             for subsystem in member.findall('./subsystem'):
                 subsystem_code = '' + subsystem.find('./subsystemCode').text
-                yield (instance, member_class, member_code, subsystem_code, member_name)
+                yield instance, member_class, member_code, subsystem_code, member_name
     except Exception as e:
         raise XrdInfoError(e)
 
@@ -249,7 +261,7 @@ def registered_subsystems(shared_params):
                 subsystem_id = subsystem.attrib['id']
                 subsystem_code = '' + subsystem.find('./subsystemCode').text
                 if root.findall('./securityServer[client="{}"]'.format(subsystem_id)):
-                    yield (instance, member_class, member_code, subsystem_code)
+                    yield instance, member_class, member_code, subsystem_code
     except Exception as e:
         raise XrdInfoError(e)
 
@@ -287,7 +299,7 @@ def subsystems_with_server(shared_params):
                         owner_code, server_code, address)
                     server_found = True
                 if not server_found:
-                    yield (instance, member_class, member_code, subsystem_code)
+                    yield instance, member_class, member_code, subsystem_code
     except Exception as e:
         raise XrdInfoError(e)
 
@@ -308,7 +320,7 @@ def servers(shared_params):
             member_code = '' + owner.find('./memberCode').text
             server_code = '' + server.find('./serverCode').text
             address = '' + server.find('./address').text
-            yield (instance, member_class, member_code, server_code, address)
+            yield instance, member_class, member_code, server_code, address
     except Exception as e:
         raise XrdInfoError(e)
 
@@ -319,7 +331,7 @@ def addr_ips(address):
     """
     try:
         for ip in socket.gethostbyname_ex(address)[2]:
-            yield ('' + ip)
+            yield '' + ip
     except socket.gaierror:
         # Ignoring DNS name not found error
         pass
@@ -336,7 +348,7 @@ def servers_ips(shared_params):
         for server in root.findall('./securityServer'):
             address = server.find('address').text
             for ip in addr_ips(address):
-                yield ('' + ip)
+                yield '' + ip
     except Exception as e:
         raise XrdInfoError(e)
 
@@ -521,7 +533,7 @@ def wsdl_methods(wsdl_doc):
             version = operation.find('./xrd:version', NS).text \
                 if operation.find('./xrd:version', NS) is not None else ''
             if 'name' in operation.attrib:
-                yield ('' + operation.attrib['name'], '' + version)
+                yield '' + operation.attrib['name'], '' + version
     except Exception as e:
         raise XrdInfoError(e)
 
@@ -546,6 +558,7 @@ def openapi(addr, client, service, timeout=DEFAULT_TIMEOUT, verify=False, cert=N
         XRD_REST_VERSION, identifier(service[:4]), encode_part(service[4])))
 
     headers = {'X-Road-Client': client_header, 'accept': 'application/json'}
+    openapi_response = None
     try:
         openapi_response = requests.get(
             url, headers=headers, timeout=timeout, verify=verify, cert=cert)
@@ -555,7 +568,45 @@ def openapi(addr, client, service, timeout=DEFAULT_TIMEOUT, verify=False, cert=N
     except requests.exceptions.Timeout as e:
         raise RequestTimeoutError(e)
     except Exception as e:
-        raise XrdInfoError(e)
+        error_type = ''
+        try:
+            resp = json.loads(openapi_response.text)
+            if resp['message'] == 'Invalid service type: REST':
+                error_type = 'not_openapi'
+            elif re.search('^Failed reading service description from', resp['message']):
+                error_type = 'openapi_failed'
+        except (AttributeError, ValueError, KeyError):
+            # Failed to find precise error.
+            pass
+        if error_type == 'not_openapi':
+            raise NotOpenapiServiceError('Service does not have OpenAPI description')
+        if error_type == 'openapi_failed':
+            raise OpenapiReadError('Failed reading service OpenAPI description')
+        else:
+            raise XrdInfoError(e)
+
+
+def openapi_endpoints(openapi_doc):
+    """Return list of endpoints in OpenAPI."""
+    try:
+        data = yaml.load(openapi_doc, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        try:
+            data = json.loads(openapi_doc)
+        except json.JSONDecodeError:
+            raise XrdInfoError('Can not parse OpenAPI description')
+
+    results = []
+    try:
+        for path, operations in data['paths'].items():
+            for verb, operation in operations.items():
+                results.append({
+                    'verb': verb, 'path': path, 'summary': operation.get('summary', ''),
+                    'description': operation.get('description', '')})
+    except Exception:
+        raise XrdInfoError('Endpoints not found')
+
+    return results
 
 
 def encode_part(part):

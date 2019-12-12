@@ -456,7 +456,8 @@ def process_services(subsystem, params, doc_path):
             results.append(service_item(service, 'ERROR', '', []))
             continue
 
-        results.append(service_item(service, 'OK', openapi_name, endpoints))
+        results.append(
+            service_item(service, 'OK', '{}/{}'.format(doc_path, openapi_name), endpoints))
 
     return results
 

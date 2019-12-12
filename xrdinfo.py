@@ -138,6 +138,21 @@ class OpenapiReadError(XrdInfoError):
     pass
 
 
+def raise_rest_exception(err, response):
+    """Raises more precise exception for REST services"""
+    try:
+        resp = json.loads(response.text)
+        if resp['message'] == 'Invalid service type: REST':
+            raise NotOpenapiServiceError('Service does not have OpenAPI description')
+        elif re.search('^Failed reading service description from', resp['message']):
+            raise OpenapiReadError('Failed reading service OpenAPI description')
+        else:
+            raise XrdInfoError('RestError: {}: {}'.format(resp['type'], resp['message']))
+    except (AttributeError, json.JSONDecodeError, KeyError):
+        # Failed to find precise error.
+        raise XrdInfoError(err)
+
+
 def shared_params_ss(addr, instance=None, timeout=DEFAULT_TIMEOUT, verify=False, cert=None):
     """Get shared-params.xml content from local Security Server.
     By default return info about local X-Road instance.
@@ -424,7 +439,7 @@ def methods_rest(
         cert=None):
     """Get X-Road listMethods or allowedMethods response.
     Return tuple: (xRoadInstance, memberClass, memberCode,
-    subsystemCode, serviceCode, serviceVersion).
+    subsystemCode, serviceCode).
     """
     url = addr
     # Add HTTP/HTTPS scheme if missing
@@ -443,6 +458,7 @@ def methods_rest(
     url = urlparse.urljoin(url, '/{}/{}/{}'.format(XRD_REST_VERSION, identifier(producer), method))
 
     headers = {'X-Road-Client': client_header, 'accept': 'application/json'}
+    methods_response = None
     try:
         methods_response = requests.get(
             url, headers=headers, timeout=timeout, verify=verify, cert=cert)
@@ -458,7 +474,8 @@ def methods_rest(
     except requests.exceptions.Timeout as e:
         raise RequestTimeoutError(e)
     except Exception as e:
-        raise XrdInfoError(e)
+        #raise XrdInfoError(e)
+        raise_rest_exception(e, methods_response)
 
 
 def wsdl(addr, client, service, timeout=DEFAULT_TIMEOUT, verify=False, cert=None):
@@ -568,33 +585,28 @@ def openapi(addr, client, service, timeout=DEFAULT_TIMEOUT, verify=False, cert=N
     except requests.exceptions.Timeout as e:
         raise RequestTimeoutError(e)
     except Exception as e:
-        error_type = ''
+        raise_rest_exception(e, openapi_response)
+
+
+def load_openapi(openapi_doc):
+    """Load OpenAPI description into Python object.
+    Return tuple: (data, document_type).
+    """
+    try:
+        # Checking JSON first, because YAML is a superset of JSON
+        data = json.loads(openapi_doc)
+        return data, 'json'
+    except json.JSONDecodeError:
         try:
-            resp = json.loads(openapi_response.text)
-            if resp['message'] == 'Invalid service type: REST':
-                error_type = 'not_openapi'
-            elif re.search('^Failed reading service description from', resp['message']):
-                error_type = 'openapi_failed'
-        except (AttributeError, ValueError, KeyError):
-            # Failed to find precise error.
-            pass
-        if error_type == 'not_openapi':
-            raise NotOpenapiServiceError('Service does not have OpenAPI description')
-        if error_type == 'openapi_failed':
-            raise OpenapiReadError('Failed reading service OpenAPI description')
-        else:
-            raise XrdInfoError(e)
+            data = yaml.load(openapi_doc, Loader=yaml.SafeLoader)
+            return data, 'yaml'
+        except yaml.YAMLError:
+            raise XrdInfoError('Can not parse OpenAPI description')
 
 
 def openapi_endpoints(openapi_doc):
     """Return list of endpoints in OpenAPI."""
-    try:
-        data = yaml.load(openapi_doc, Loader=yaml.SafeLoader)
-    except yaml.YAMLError:
-        try:
-            data = json.loads(openapi_doc)
-        except json.JSONDecodeError:
-            raise XrdInfoError('Can not parse OpenAPI description')
+    data, _ = load_openapi(openapi_doc)
 
     results = []
     try:
@@ -604,6 +616,10 @@ def openapi_endpoints(openapi_doc):
                     'verb': verb, 'path': path, 'summary': operation.get('summary', ''),
                     'description': operation.get('description', '')})
     except Exception:
+        raise XrdInfoError('Endpoints not found')
+
+    if not results:
+        # OpenAPI without endpoints is not considered valid
         raise XrdInfoError('Endpoints not found')
 
     return results

@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import time
+import urllib.parse as urlparse
 import xrdinfo
 
 # Default timeout for HTTP requests
@@ -303,8 +304,9 @@ def subsystem_item(subsystem, methods, services):
         'memberCode': subsystem[2],
         'subsystemCode': subsystem[3],
         'subsystemStatus': subsystem_status,
+        'servicesStatus': 'OK' if services is not None else 'ERROR',
         'methods': sorted_methods,
-        'services': services
+        'services': services if services is not None else []
     }
 
 
@@ -376,7 +378,8 @@ def process_methods(subsystem, params, doc_path):
                 wsdl_method_name = identifier_path(subsystem + wsdl_method)
                 # We can find other methods in a method WSDL
                 method_index[wsdl_method_name] = method_item(
-                    subsystem + wsdl_method, 'OK', '{}/{}'.format(doc_path, wsdl_name))
+                    subsystem + wsdl_method, 'OK', urlparse.quote(
+                        '{}/{}'.format(doc_path, wsdl_name)))
                 txt = txt + '\n    {}'.format(wsdl_method_name)
         except xrdinfo.XrdInfoError as err:
             txt = txt + '\nWSDL parsing failed: {}'.format(err)
@@ -457,7 +460,8 @@ def process_services(subsystem, params, doc_path):
             continue
 
         results.append(
-            service_item(service, 'OK', '{}/{}'.format(doc_path, openapi_name), endpoints))
+            service_item(service, 'OK', urlparse.quote(
+                '{}/{}'.format(doc_path, openapi_name)), endpoints))
 
     return results
 

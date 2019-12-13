@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import time
+import urllib.parse as urlparse
 import xrdinfo
 
 # Default timeout for HTTP requests
@@ -63,6 +64,14 @@ DEFAULT_LOGGER = {
 
 # Application will use this logger
 LOGGER = logging.getLogger('catalogue-collector')
+
+
+def identifier_path(items):
+    """Convert identifier in form of list/tuple to string representation
+    of filesystem path. We assume that no symbols forbidden by
+    filesystem are used in identifiers.
+    """
+    return '/'.join(items)
 
 
 def load_config(config_file):
@@ -217,6 +226,246 @@ def save_wsdl(path, hashes, wsdl, wsdl_replaces):
     return new_file, hashes
 
 
+def hash_openapis(path):
+    """Find hashes of all OpenAPI documents in directory"""
+    hashes = {}
+    for file_name in os.listdir(path):
+        search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
+        if search_res:
+            # Reading as bytes to avoid line ending conversion
+            with open('{}/{}'.format(path, file_name), 'rb') as openapi_file:
+                openapi = openapi_file.read()
+            hashes[file_name] = hashlib.md5(openapi).hexdigest()
+    return hashes
+
+
+def save_openapi(path, hashes, wsdl, service_name, doc_type):
+    """Save OpenAPI if it does not exist yet"""
+    openapi_hash = hashlib.md5(wsdl.encode('utf-8')).hexdigest()
+    max_openapi = -1
+    for file_name in hashes.keys():
+        search_res = re.search('^{}_(\\d+)\\.(yaml|json)$'.format(service_name), file_name)
+        if search_res:
+            if openapi_hash == hashes[file_name]:
+                # Matching OpenAPI found (both name pattern and hash)
+                return file_name, hashes
+            if int(search_res.group(1)) > max_openapi:
+                max_openapi = int(search_res.group(1))
+    # Creating new file
+    new_file = '{}_{}.{}'.format(service_name, int(max_openapi) + 1, doc_type)
+    # Writing as bytes to avoid line ending conversion
+    with open('{}/{}'.format(path, new_file), 'wb') as openapi_file:
+        openapi_file.write(wsdl.encode('utf-8'))
+    hashes[new_file] = openapi_hash
+    return new_file, hashes
+
+
+def method_item(method, status, wsdl):
+    """Function that sets the correct structure for method item"""
+    return {
+        'serviceCode': method[4],
+        'serviceVersion': method[5],
+        'methodStatus': status,
+        'wsdl': wsdl
+    }
+
+
+def service_item(service, status, openapi, endpoints):
+    """Function that sets the correct structure for service item
+    If status=='OK' and openapi is empty then:
+      * it is REST X-Road service that does not have a description;
+      * endpoints array is empty.
+    If status=='OK' and openapi is not empty then:
+      * it is OpenAPI X-Road service with description;
+      * at least one endpoint must be present in OpenAPI description.
+    In other cases status must not be 'OK' to indicate problem with
+    the service.
+    """
+    return {
+        'serviceCode': service[4],
+        'status': status,
+        'openapi': openapi,
+        'endpoints': endpoints
+    }
+
+
+def subsystem_item(subsystem, methods, services):
+    """Function that sets the correct structure for subsystem item"""
+    subsystem_status = 'ERROR'
+    sorted_methods = []
+    if methods is not None:
+        subsystem_status = 'OK'
+        for method_key in sorted(methods.keys()):
+            sorted_methods.append(methods[method_key])
+
+    return {
+        'xRoadInstance': subsystem[0],
+        'memberClass': subsystem[1],
+        'memberCode': subsystem[2],
+        'subsystemCode': subsystem[3],
+        'subsystemStatus': subsystem_status,
+        'servicesStatus': 'OK' if services is not None else 'ERROR',
+        'methods': sorted_methods,
+        'services': services if services is not None else []
+    }
+
+
+def process_methods(subsystem, params, doc_path):
+    """Function that finds SOAP methods of a subsystem"""
+    wsdl_path = '{}/{}'.format(params['path'], doc_path)
+    try:
+        make_dirs(wsdl_path)
+        hashes = hash_wsdls(wsdl_path)
+    except OSError as err:
+        LOGGER.warning('SOAP: %s: %s', identifier_path(subsystem), err)
+        return None
+
+    method_index = {}
+    skip_methods = False
+    try:
+        # Converting iterator to list to properly capture exceptions
+        methods = list(xrdinfo.methods(
+            addr=params['url'], client=params['client'], producer=subsystem,
+            method='listMethods', timeout=params['timeout'], verify=params['verify'],
+            cert=params['cert']))
+    except xrdinfo.XrdInfoError as err:
+        LOGGER.info('SOAP: %s: %s', identifier_path(subsystem), err)
+        return None
+
+    for method in sorted(methods):
+        method_name = identifier_path(method)
+        if method_name in method_index:
+            # Method already found in previous WSDL's
+            continue
+
+        if skip_methods:
+            # Skipping, because previous getWsdl request timed out
+            LOGGER.info('SOAP: %s - SKIPPING', method_name)
+            method_index[method_name] = method_item(method, 'SKIPPED', '')
+            continue
+
+        try:
+            wsdl = xrdinfo.wsdl(
+                addr=params['url'], client=params['client'], service=method,
+                timeout=params['timeout'], verify=params['verify'], cert=params['cert'])
+        except xrdinfo.RequestTimeoutError:
+            # Skipping all following requests to that subsystem
+            skip_methods = True
+            LOGGER.info('SOAP: %s - TIMEOUT', method_name)
+            method_index[method_name] = method_item(method, 'TIMEOUT', '')
+            continue
+        except xrdinfo.XrdInfoError as err:
+            if str(err) == 'SoapFault: Service is a REST service and does not have a WSDL':
+                # This is specific to X-Road 6.21 (partial and
+                # deprecated support for REST). We do not want to spam
+                # INFO messages about REST services
+                LOGGER.debug('SOAP: %s: %s', method_name, err)
+            else:
+                LOGGER.info('SOAP: %s: %s', method_name, err)
+            method_index[method_name] = method_item(method, 'ERROR', '')
+            continue
+
+        try:
+            wsdl_name, hashes = save_wsdl(wsdl_path, hashes, wsdl, params['wsdl_replaces'])
+        except OSError as err:
+            LOGGER.warning('SOAP: %s: %s', method_name, err)
+            method_index[method_name] = method_item(method, 'ERROR', '')
+            continue
+
+        txt = 'SOAP: {}'.format(wsdl_name)
+        try:
+            for wsdl_method in xrdinfo.wsdl_methods(wsdl):
+                wsdl_method_name = identifier_path(subsystem + wsdl_method)
+                # We can find other methods in a method WSDL
+                method_index[wsdl_method_name] = method_item(
+                    subsystem + wsdl_method, 'OK', urlparse.quote(
+                        '{}/{}'.format(doc_path, wsdl_name)))
+                txt = txt + '\n    {}'.format(wsdl_method_name)
+        except xrdinfo.XrdInfoError as err:
+            txt = txt + '\nWSDL parsing failed: {}'.format(err)
+            method_index[method_name] = method_item(method, 'ERROR', '')
+        LOGGER.info(txt)
+
+        if method_name not in method_index:
+            LOGGER.warning(
+                'SOAP: %s - Method was not found in returned WSDL!', method_name)
+            method_index[method_name] = method_item(method, 'ERROR', '')
+    return method_index
+
+
+def process_services(subsystem, params, doc_path):
+    """Function that finds REST services of a subsystem"""
+    openapi_path = '{}/{}'.format(params['path'], doc_path)
+    try:
+        make_dirs(openapi_path)
+        hashes = hash_openapis(openapi_path)
+    except OSError as err:
+        LOGGER.warning('REST: %s: %s', identifier_path(subsystem), err)
+        return None
+
+    results = []
+    skip_services = False
+
+    try:
+        # Converting iterator to list to properly capture exceptions
+        services = list(xrdinfo.methods_rest(
+            addr=params['url'], client=params['client'], producer=subsystem,
+            method='listMethods', timeout=params['timeout'], verify=params['verify'],
+            cert=params['cert']))
+    except xrdinfo.XrdInfoError as err:
+        LOGGER.info('REST: %s: %s', identifier_path(subsystem), err)
+        return None
+
+    for service in sorted(services):
+        service_name = identifier_path(service)
+
+        if skip_services:
+            # Skipping, because previous getOpenAPI request timed out
+            LOGGER.info('REST: %s - SKIPPING', service_name)
+            results.append(service_item(service, 'SKIPPED', '', []))
+            continue
+
+        try:
+            openapi = xrdinfo.openapi(
+                addr=params['url'], client=params['client'], service=service,
+                timeout=params['timeout'], verify=params['verify'], cert=params['cert'])
+        except xrdinfo.RequestTimeoutError:
+            # Skipping all following requests to that subsystem
+            skip_services = True
+            LOGGER.info('REST: %s - TIMEOUT', service_name)
+            results.append(service_item(service, 'TIMEOUT', '', []))
+            continue
+        except xrdinfo.NotOpenapiServiceError:
+            results.append(service_item(service, 'OK', '', []))
+            continue
+        except xrdinfo.XrdInfoError as err:
+            LOGGER.info('REST: %s: %s', service_name, err)
+            results.append(service_item(service, 'ERROR', '', []))
+            continue
+
+        try:
+            _, openapi_type = xrdinfo.load_openapi(openapi)
+            endpoints = xrdinfo.openapi_endpoints(openapi)
+        except xrdinfo.XrdInfoError as err:
+            LOGGER.info('REST: %s: %s', service_name, err)
+            results.append(service_item(service, 'ERROR', '', []))
+            continue
+
+        try:
+            openapi_name, hashes = save_openapi(
+                openapi_path, hashes, openapi, service[4], openapi_type)
+        except OSError as err:
+            LOGGER.warning('REST: %s: %s', service_name, err)
+            results.append(service_item(service, 'ERROR', '', []))
+            continue
+
+        results.append(
+            service_item(service, 'OK', urlparse.quote(
+                '{}/{}'.format(doc_path, openapi_name)), endpoints))
+
+    return results
+
+
 def worker(params):
     """Main function for worker threads"""
     while True:
@@ -224,87 +473,24 @@ def worker(params):
         # the worker.
         try:
             subsystem = params['work_queue'].get(True, 0.1)
-            LOGGER.info('Start processing %s', xrdinfo.stringify(subsystem))
+            LOGGER.info('Start processing %s', identifier_path(subsystem))
         except queue.Empty:
             if params['shutdown'].is_set():
                 return
             continue
-        wsdl_rel_path = ''
+        subsystem_path = ''
         try:
-            wsdl_rel_path = xrdinfo.stringify(subsystem)
-            wsdl_path = '{}/{}'.format(params['path'], wsdl_rel_path)
-            make_dirs(wsdl_path)
-            hashes = hash_wsdls(wsdl_path)
-
-            method_index = {}
-            skip_methods = False
-            for method in sorted(xrdinfo.methods(
-                    addr=params['url'], client=params['client'], producer=subsystem,
-                    method='listMethods', timeout=params['timeout'], verify=params['verify'],
-                    cert=params['cert'])):
-                if xrdinfo.stringify(method) in method_index:
-                    # Method already found in previous WSDL's
-                    continue
-
-                if skip_methods:
-                    # Skipping, because previous getWsdl request timed
-                    # out
-                    LOGGER.info('%s - SKIPPING', xrdinfo.stringify(method))
-                    method_index[xrdinfo.stringify(method)] = 'SKIPPED'
-                    continue
-
-                try:
-                    wsdl = xrdinfo.wsdl(
-                        addr=params['url'], client=params['client'], service=method,
-                        timeout=params['timeout'], verify=params['verify'], cert=params['cert'])
-                except xrdinfo.RequestTimeoutError:
-                    # Skipping all following requests to that subsystem
-                    skip_methods = True
-                    LOGGER.info('%s - TIMEOUT', xrdinfo.stringify(method))
-                    method_index[xrdinfo.stringify(method)] = 'TIMEOUT'
-                    continue
-                except xrdinfo.XrdInfoError as err:
-                    if str(err) == 'SoapFault: Service is a REST service and does not have a WSDL':
-                        # We do not want to spam messages about REST services
-                        LOGGER.debug('%s: %s', xrdinfo.stringify(method), err)
-                        method_index[xrdinfo.stringify(method)] = 'REST'
-                    else:
-                        LOGGER.info('%s: %s', xrdinfo.stringify(method), err)
-                        method_index[xrdinfo.stringify(method)] = ''
-                    continue
-
-                wsdl_name, hashes = save_wsdl(wsdl_path, hashes, wsdl, params['wsdl_replaces'])
-                txt = '{}'.format(wsdl_name)
-                try:
-                    for wsdl_method in xrdinfo.wsdl_methods(wsdl):
-                        method_full_name = xrdinfo.stringify(subsystem + wsdl_method)
-                        method_index[method_full_name] = '{}/{}'.format(wsdl_rel_path, wsdl_name)
-                        txt = txt + '\n    {}'.format(method_full_name)
-                except xrdinfo.XrdInfoError as err:
-                    txt = txt + '\nWSDL parsing failed: {}'.format(err)
-                    method_index[xrdinfo.stringify(method)] = ''
-                LOGGER.info(txt)
-
-                if xrdinfo.stringify(method) not in method_index:
-                    LOGGER.warning(
-                        '%s - Method was not found in returned WSDL!', xrdinfo.stringify(method))
-                    method_index[xrdinfo.stringify(method)] = ''
+            subsystem_path = identifier_path(subsystem)
+            methods_result = process_methods(subsystem, params, subsystem_path)
+            services_result = process_services(subsystem, params, subsystem_path)
 
             with params['results_lock']:
-                params['results'][wsdl_rel_path] = {
-                    'methods': method_index,
-                    'ok': True}
-        except xrdinfo.XrdInfoError as err:
-            with params['results_lock']:
-                params['results'][wsdl_rel_path] = {
-                    'methods': {},
-                    'ok': False}
-            LOGGER.info('%s: %s', xrdinfo.stringify(subsystem), err)
+                params['results'][subsystem_path] = subsystem_item(
+                    subsystem, methods_result, services_result)
+        # Using broad exception to avoid unexpected exits of workers
         except Exception as err:
             with params['results_lock']:
-                params['results'][wsdl_rel_path] = {
-                    'methods': {},
-                    'ok': False}
+                params['results'][subsystem_path] = subsystem_item(subsystem, None, None)
             LOGGER.warning('Unexpected exception: %s: %s', type(err).__name__, err)
         finally:
             params['work_queue'].task_done()
@@ -315,11 +501,11 @@ def sort_by_time(item):
     return item['reportTime']
 
 
-def all_results_failed(results):
+def all_results_failed(subsystems):
     """Check if all results have failed status"""
-    for result in results.values():
-        if result['ok']:
-            # Found non-failed result
+    for subsystem in subsystems.values():
+        if subsystem['subsystemStatus'] == 'OK':
+            # Found non-failed subsystem
             return False
     # All results failed
     return True
@@ -336,47 +522,7 @@ def process_results(params):
 
     json_data = []
     for subsystem_key in sorted(results.keys()):
-        subsystem_result = results[subsystem_key]  # type: dict
-        methods = subsystem_result['methods']
-        if subsystem_result['ok'] and methods:
-            subsystem_status = 'ok'
-        elif subsystem_result['ok']:
-            subsystem_status = 'empty'
-        else:
-            subsystem_status = 'error'
-        subsystem = subsystem_key.split('/')
-        json_subsystem = {
-            'xRoadInstance': subsystem[0],
-            'memberClass': subsystem[1],
-            'memberCode': subsystem[2],
-            'subsystemCode': subsystem[3],
-            'subsystemStatus': 'ERROR' if subsystem_status == 'error' else 'OK',
-            'methods': []
-        }
-        for method_key in sorted(methods.keys()):
-            method = method_key.split('/')
-            json_method = {
-                'serviceCode': method[4],
-                'serviceVersion': method[5],
-            }
-            if methods[method_key] == 'SKIPPED':
-                json_method['methodStatus'] = 'SKIPPED'
-                json_method['wsdl'] = ''
-            elif methods[method_key] == 'TIMEOUT':
-                json_method['methodStatus'] = 'TIMEOUT'
-                json_method['wsdl'] = ''
-            elif methods[method_key] == 'REST':
-                json_method['methodStatus'] = 'REST'
-                json_method['wsdl'] = ''
-            elif methods[method_key]:
-                json_method['methodStatus'] = 'OK'
-                json_method['wsdl'] = methods[method_key]
-            else:
-                json_method['methodStatus'] = 'ERROR'
-                json_method['wsdl'] = ''
-
-            json_subsystem['methods'].append(json_method)
-        json_data.append(json_subsystem)
+        json_data.append(results[subsystem_key])
 
     report_time = time.localtime(time.time())
     formatted_time = time.strftime('%Y-%m-%d %H:%M:%S', report_time)
@@ -453,10 +599,10 @@ def main():
     try:
         for subsystem in xrdinfo.registered_subsystems(shared_params):
             if subsystem[2] in params['excluded_member_codes']:
-                LOGGER.info('Skipping excluded member %s', xrdinfo.stringify(subsystem))
+                LOGGER.info('Skipping excluded member %s', identifier_path(subsystem))
                 continue
             if [subsystem[2], subsystem[3]] in params['excluded_subsystem_codes']:
-                LOGGER.info('Skipping excluded subsystem %s', xrdinfo.stringify(subsystem))
+                LOGGER.info('Skipping excluded subsystem %s', identifier_path(subsystem))
                 continue
             params['work_queue'].put(subsystem)
     except xrdinfo.XrdInfoError as err:

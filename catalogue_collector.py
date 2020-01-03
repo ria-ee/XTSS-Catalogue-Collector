@@ -4,6 +4,7 @@
 
 import queue
 from threading import Thread, Event, Lock
+from datetime import datetime, timedelta
 import argparse
 import hashlib
 import json
@@ -108,6 +109,9 @@ def set_params(config):
         'wsdl_replaces': DEFAULT_WSDL_REPLACES,
         'excluded_member_codes': [],
         'excluded_subsystem_codes': [],
+        'filtered_hours': 24,
+        'filtered_days': 30,
+        'filtered_months': 12,
         'work_queue': queue.Queue(),
         'results': {},
         'results_lock': Lock(),
@@ -170,6 +174,18 @@ def set_params(config):
         params['excluded_subsystem_codes'] = config['excluded_subsystem_codes']
         LOGGER.info(
             'Configuring "excluded_subsystem_codes": %s', params['excluded_subsystem_codes'])
+
+    if 'filtered_hours' in config and config['filtered_hours'] > 0:
+        params['filtered_hours'] = config['filtered_hours']
+        LOGGER.info('Configuring "filtered_hours": %s', params['filtered_hours'])
+
+    if 'filtered_days' in config and config['filtered_days'] > 0:
+        params['filtered_days'] = config['filtered_days']
+        LOGGER.info('Configuring "filtered_days": %s', params['filtered_days'])
+
+    if 'filtered_months' in config and config['filtered_months'] > 0:
+        params['filtered_months'] = config['filtered_months']
+        LOGGER.info('Configuring "filtered_months": %s', params['filtered_months'])
 
     LOGGER.info('Configuration done')
 
@@ -496,6 +512,67 @@ def worker(params):
             params['work_queue'].task_done()
 
 
+def hour_start(src_time):
+    """Return the beginning of the hour of the specified datetime"""
+    return datetime(src_time.year, src_time.month, src_time.day, src_time.hour)
+
+
+def day_start(src_time):
+    """Return the beginning of the day of the specified datetime"""
+    return datetime(src_time.year, src_time.month, src_time.day)
+
+
+def month_start(src_time):
+    """Return the beginning of the month of the specified datetime"""
+    return datetime(src_time.year, src_time.month, 1)
+
+
+def year_start(src_time):
+    """Return the beginning of the year of the specified datetime"""
+    return datetime(src_time.year, 1, 1)
+
+
+def add_months(src_time, amount):
+    """Adds specified amount of months to datetime value.
+    Specifying negative amount will result in subtraction of months.
+    """
+    return src_time.replace(
+        # To find the year correction we convert the month from 1..12 to
+        # 0..11 value, add amount of months and find the integer
+        # part of division by 12.
+        year=src_time.year + (src_time.month - 1 + amount) // 12,
+        # To find the new month we convert the month from 1..12 to
+        # 0..11 value, add amount of months, find the remainder
+        # part after division by 12 and convert the month back
+        # to the 1..12 form.
+        month=(src_time.month - 1 + amount) % 12 + 1)
+
+
+def shift_current_hour(offset):
+    """Shifts current hour by a specified offset"""
+    start = hour_start(datetime.today())
+    return start + timedelta(hours=offset)
+
+
+def shift_current_day(offset):
+    """Shifts current hour by a specified offset"""
+    start = day_start(datetime.today())
+    return start + timedelta(days=offset)
+
+
+def shift_current_month(offset):
+    """Shifts current hour by a specified offset"""
+    start = month_start(datetime.today())
+    return add_months(start, offset)
+
+
+def add_filtered(filtered, item_key, report_time, history_item, min_time):
+    """Add report to the list of filtered reports"""
+    if min_time is None or item_key >= min_time:
+        if item_key not in filtered or report_time < filtered[item_key]['time']:
+            filtered[item_key] = {'time': report_time, 'item': history_item}
+
+
 def sort_by_time(item):
     """A helper function for sorting, indicates which field to use"""
     return item['reportTime']
@@ -509,6 +586,47 @@ def all_results_failed(subsystems):
             return False
     # All results failed
     return True
+
+
+def write_json(file_name, json_data):
+    """Write data to JSON file"""
+    with open(file_name, 'w') as json_file:
+        json.dump(json_data, json_file, indent=2, ensure_ascii=False)
+
+
+def filtered_history(json_history, params):
+    """Get filtered reports history"""
+    min_hour = shift_current_hour(-params['filtered_hours'])
+    min_day = shift_current_day(-params['filtered_days'])
+    min_month = shift_current_month(-params['filtered_months'])
+    filtered_items = {}
+    for history_item in json_history:
+        report_time = datetime.strptime(history_item['reportTime'], '%Y-%m-%d %H:%M:%S')
+
+        item_key = hour_start(report_time)
+        add_filtered(filtered_items, item_key, report_time, history_item, min_hour)
+
+        item_key = day_start(report_time)
+        add_filtered(filtered_items, item_key, report_time, history_item, min_day)
+
+        item_key = month_start(report_time)
+        add_filtered(filtered_items, item_key, report_time, history_item, min_month)
+
+        # Adding all available years
+        item_key = year_start(report_time)
+        add_filtered(filtered_items, item_key, report_time, history_item, None)
+
+    # Latest report is always added to filtered history
+    latest = json_history[0]
+    unique_items = {latest['reportTime']: latest}
+    for val in filtered_items.values():
+        item = val['item']
+        unique_items[item['reportTime']] = item
+
+    json_filtered_history = list(unique_items.values())
+    json_filtered_history.sort(key=sort_by_time, reverse=True)
+
+    return json_filtered_history
 
 
 def process_results(params):
@@ -528,9 +646,7 @@ def process_results(params):
     formatted_time = time.strftime('%Y-%m-%d %H:%M:%S', report_time)
     suffix = time.strftime('%Y%m%d%H%M%S', report_time)
 
-    # JSON output
-    with open('{}/index_{}.json'.format(params['path'], suffix), 'w') as json_file:
-        json.dump(json_data, json_file, indent=2, ensure_ascii=False)
+    write_json('{}/index_{}.json'.format(params['path'], suffix), json_data)
 
     json_history = []
     try:
@@ -543,8 +659,10 @@ def process_results(params):
         suffix)})
     json_history.sort(key=sort_by_time, reverse=True)
 
-    with open('{}/history.json'.format(params['path']), 'w') as json_file:
-        json.dump(json_history, json_file, indent=2, ensure_ascii=False)
+    write_json('{}/history.json'.format(params['path']), json_history)
+
+    write_json('{}/filtered_history.json'.format(params['path']), filtered_history(
+        json_history, params))
 
     # Replace index.json with latest report
     shutil.copy(

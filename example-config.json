@@ -37,6 +37,9 @@
       "secret2"
     ]
   ],
+  "filtered_hours": 24,
+  "filtered_days": 30,
+  "filtered_months": 12,
   "logging-config": {
     "version": 1,
     "disable_existing_loggers": true,

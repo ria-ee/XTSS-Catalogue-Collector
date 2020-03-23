@@ -185,7 +185,7 @@ components:
         serviceCode:
           type: string
           example: stats
-          description: X-tee SOAP service code
+          description: X-tee REST service code
         serviceStatus:
           type: string
           enum:
@@ -195,7 +195,7 @@ components:
             - SKIPPED
           example: OK
           description: |
-            Statuses of X-tee SOAP service description;
+            Statuses of X-tee REST service description;
             OK - OpenAPI query and parsing were successful;
             ERROR - OpenApi query of parsing failed;
             TIMEOUT - OpenAPI query timed out;

@@ -1,4 +1,11 @@
 openapi: 3.0.0
+servers:
+  - description: X-tee EE instance data
+    url: https://x-tee.ee/catalogue-data/EE
+  - description: X-tee ee-test instance data
+    url: https://x-tee.ee/catalogue-data/ee-test
+  - description: X-tee ee-dev instance data
+    url: https://x-tee.ee/catalogue-data/ee-dev
 info:
   description: X-tee service catalogue
   version: "1.0.0"

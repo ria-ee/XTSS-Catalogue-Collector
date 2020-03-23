@@ -179,7 +179,7 @@ components:
           type: string
           format: url
           example: 'EE/GOV/70006317/aar/2.wsdl'
-          description: relavive URL to X-tee SOAP service WSDL description file
+          description: relative URL to X-tee SOAP service WSDL description file
     Service:
       type: object
       description: REST service information
@@ -211,7 +211,7 @@ components:
           type: string
           format: url
           example: 'EE/GOV/70006317/aar/stats_0.yaml'
-          description: relavive URL to X-tee REST service OpenAPI description file
+          description: relative URL to X-tee REST service OpenAPI description file
         endpoints:
           type: array
           items:
@@ -256,4 +256,4 @@ components:
           type: string
           format: url
           example: 'index_20200323112526.json'
-          description: relavive path to X-tee catalogue version
+          description: relative path to X-tee catalogue version

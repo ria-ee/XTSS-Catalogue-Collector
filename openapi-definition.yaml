@@ -197,7 +197,7 @@ components:
           description: |
             Statuses of X-tee REST service description;
             OK - OpenAPI query and parsing were successful;
-            ERROR - OpenApi query of parsing failed;
+            ERROR - OpenAPI query of parsing failed;
             TIMEOUT - OpenAPI query timed out;
             SKIPPED - Query to the server where previous OpenAPI request timed out was not performed.
         openapi:

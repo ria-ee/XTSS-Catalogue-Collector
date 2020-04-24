@@ -5,6 +5,8 @@
 import queue
 from threading import Thread, Event, Lock
 from datetime import datetime, timedelta
+from minio import Minio
+from io import BytesIO
 import argparse
 import hashlib
 import json
@@ -99,6 +101,12 @@ def set_params(config):
     """Configure parameters based on loaded configuration"""
     params = {
         'path': None,
+        'minio_url': None,
+        'minio_access_key': None,
+        'minio_secret_key': None,
+        'minio_secure': True,
+        'minio_bucket': 'catalogue',
+        'minio_path': '',
         'url': None,
         'client': None,
         'instance': None,
@@ -124,6 +132,33 @@ def set_params(config):
     else:
         LOGGER.error('Configuration error: Output path is not provided')
         return None
+
+    if 'minio_url' in config:
+        params['minio_url'] = config['minio_url']
+        LOGGER.info('Configuring "minio_url": %s', params['minio_url'])
+
+    if 'minio_access_key' in config:
+        params['minio_access_key'] = config['minio_access_key']
+        LOGGER.info('Configuring "minio_access_key": %s', params['minio_access_key'])
+
+    if 'minio_secret_key' in config:
+        params['minio_secret_key'] = config['minio_secret_key']
+        LOGGER.info('Configuring "minio_secret_key": <password hidden>')
+
+    if 'minio_secure' in config:
+        params['minio_secure'] = config['minio_secure']
+        LOGGER.info('Configuring "minio_secure": %s', params['minio_secure'])
+
+    if 'minio_bucket' in config:
+        params['minio_bucket'] = config['minio_bucket']
+        LOGGER.info('Configuring "minio_bucket": %s', params['minio_bucket'])
+
+    if 'minio_path' in config:
+        params['minio_path'] = config['minio_path']
+        params['minio_path'].strip('/')
+        if params['minio_path']:
+            params['minio_path'] += '/'
+        LOGGER.info('Configuring "minio_path": %s', params['minio_path'])
 
     if 'server_url' in config:
         params['url'] = config['server_url']
@@ -647,6 +682,11 @@ def process_results(params):
     suffix = time.strftime('%Y%m%d%H%M%S', report_time)
 
     write_json('{}/index_{}.json'.format(params['path'], suffix), json_data)
+    if params['minio_url']:
+        json_binary = json.dumps(json_data, indent=2, ensure_ascii=False).encode()
+        params['minio_client'].put_object(
+            params['minio_bucket'], '{}index_{}.json'.format(params['minio_path'], suffix),
+            BytesIO(json_binary), len(json_binary), content_type='application/json')
 
     json_history = []
     try:
@@ -667,6 +707,10 @@ def process_results(params):
     # Replace index.json with latest report
     shutil.copy(
         '{}/index_{}.json'.format(params['path'], suffix), '{}/index.json'.format(params['path']))
+    if params['minio_url']:
+        params['minio_client'].copy_object(
+            params['minio_bucket'], '{}index.json'.format(params['minio_path']),
+            '/{}/{}index_{}.json'.format(params['minio_bucket'], params['minio_path'], suffix))
 
 
 def main():
@@ -695,6 +739,13 @@ def main():
 
     if not make_dirs(params['path']):
         exit(1)
+
+    if params['minio_url']:
+        params['minio_client'] = Minio(
+            params['minio_url'],
+            access_key=params['minio_access_key'],
+            secret_key=params['minio_secret_key'],
+            secure=params['minio_secure'])
 
     shared_params = None
     try:

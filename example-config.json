@@ -1,5 +1,11 @@
 {
   "output_path": "/var/www/catalogue-data/",
+  "minio_url": "localhost:9000",
+  "minio_access_key": "access_key",
+  "minio_secret_key": "secret_key",
+  "minio_secure": false,
+  "minio_bucket": "catalogue",
+  "minio_path": "XTEE-CI",
   "server_url": "https://security-server.domain.local",
   "client": [
     "INST",

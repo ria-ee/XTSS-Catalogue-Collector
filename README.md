@@ -64,3 +64,19 @@ If after usage of `remove_unused.py` you need to also delete empty directories t
 ```bash
 find . -type d -empty -delete
 ```
+
+## Minio storage
+
+If `minio_url` is configured then collected data will be pushed to minio storage.
+
+To test minio locally on linux machine execute the following commands (note that you should never use the default password for production):
+```bash
+sudo mkdir -p /mnt/data
+docker run -d -p 9000:9000 --name minio1 -e "MINIO_ACCESS_KEY=minioadmin" -e "MINIO_SECRET_KEY=minioadmin" -v /mnt/data:/data minio/minio server /data
+cd
+wget https://dl.min.io/client/mc/release/linux-amd64/mc
+chmod +x mc
+~/mc config host add --quiet --api s3v4 cat http://localhost:9000 minioadmin minioadmin
+~/mc mb cat/catalogue
+~/mc policy set download cat/catalogue
+```

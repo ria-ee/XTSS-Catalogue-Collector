@@ -368,7 +368,7 @@ def save_openapi(path, hashes, openapi, service_name, doc_type, params):
 
 
 def save_hashes(path, hashes, file_type, params):
-    """Save hashes of WSDL/OpenAPI documents"""
+    """Save hashes of WSDL/OpenAPI documents (to speedup MinIO)"""
     hashes_binary = json.dumps(hashes, indent=2, ensure_ascii=False).encode()
     if params['minio']:
         params['minio_client'].put_object(

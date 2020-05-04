@@ -64,3 +64,4 @@ If after usage of `remove_unused.py` you need to also delete empty directories t
 ```bash
 find . -type d -empty -delete
 ```
+

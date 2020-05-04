@@ -5,8 +5,6 @@
 import queue
 from threading import Thread, Event, Lock
 from datetime import datetime, timedelta
-from minio import Minio
-from minio.error import ResponseError, NoSuchKey
 from io import BytesIO
 import argparse
 import hashlib
@@ -15,8 +13,11 @@ import logging.config
 import os
 import re
 import shutil
+import sys
 import time
 import urllib.parse as urlparse
+from minio import Minio
+from minio.error import NoSuchKey
 import xrdinfo
 
 # Default timeout for HTTP requests
@@ -254,14 +255,17 @@ def hash_wsdls(path, params):
     hashes = {}
     if params['minio']:
         try:
-            wsdl_hashes_file = params['minio_client'].get_object(params['minio_bucket'], '{}_wsdl_hashes'.format(path))
+            wsdl_hashes_file = params['minio_client'].get_object(
+                params['minio_bucket'], '{}_wsdl_hashes'.format(path))
             hashes = json.loads(wsdl_hashes_file.data.decode('utf-8'))
         except NoSuchKey:
-            for obj in params['minio_client'].list_objects(params['minio_bucket'], prefix=path, recursive=False):
+            for obj in params['minio_client'].list_objects(
+                    params['minio_bucket'], prefix=path, recursive=False):
                 file_name = obj.object_name[len(path):]
                 search_res = re.search('^(\\d+)\\.wsdl$', file_name)
                 if search_res:
-                    wsdl_object = params['minio_client'].get_object(params['minio_bucket'], '{}{}'.format(path, file_name))
+                    wsdl_object = params['minio_client'].get_object(
+                        params['minio_bucket'], '{}{}'.format(path, file_name))
                     hashes[file_name] = hashlib.md5(wsdl_object.data).hexdigest()
     else:
         for file_name in os.listdir(path):
@@ -314,7 +318,8 @@ def hash_openapis(path, params):
                 params['minio_bucket'], '{}_openapi_hashes'.format(path))
             hashes = json.loads(openapi_hashes_file.data.decode('utf-8'))
         except NoSuchKey:
-            for obj in params['minio_client'].list_objects(params['minio_bucket'], prefix=path, recursive=False):
+            for obj in params['minio_client'].list_objects(
+                    params['minio_bucket'], prefix=path, recursive=False):
                 file_name = obj.object_name[len(path):]
                 search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
                 if search_res:
@@ -363,11 +368,12 @@ def save_openapi(path, hashes, openapi, service_name, doc_type, params):
 
 
 def save_hashes(path, hashes, file_type, params):
+    """Save hashes of WSDL/OpenAPI documents"""
     hashes_binary = json.dumps(hashes, indent=2, ensure_ascii=False).encode()
     if params['minio']:
         params['minio_client'].put_object(
             params['minio_bucket'], '{}_{}_hashes'.format(path, file_type),
-            BytesIO(hashes_binary), len(hashes_binary), content_type='text/xml')
+            BytesIO(hashes_binary), len(hashes_binary), content_type='text/plain')
 
 
 def method_item(method, status, wsdl):
@@ -788,8 +794,8 @@ def process_results(params):
             params['minio_bucket'], '{}index.json'.format(params['minio_path']),
             '/{}/{}index_{}.json'.format(params['minio_bucket'], params['minio_path'], suffix))
     else:
-        shutil.copy(
-            '{}/index_{}.json'.format(params['path'], suffix), '{}/index.json'.format(params['path']))
+        shutil.copy('{}/index_{}.json'.format(
+            params['path'], suffix), '{}/index.json'.format(params['path']))
 
 
 def main():
@@ -808,17 +814,17 @@ def main():
 
     config = load_config(args.config)
     if config is None:
-        exit(1)
+        sys.exit(1)
 
     configure_logging(config)
 
     params = set_params(config)
     if params is None:
-        exit(1)
+        sys.exit(1)
 
     if not params['minio']:
         if not make_dirs(params['path']):
-            exit(1)
+            sys.exit(1)
 
     if params['minio']:
         params['minio_client'] = Minio(
@@ -834,7 +840,7 @@ def main():
             verify=params['verify'], cert=params['cert'])
     except xrdinfo.XrdInfoError as err:
         LOGGER.error('Cannot download Global Configuration: %s', err)
-        exit(1)
+        sys.exit(1)
 
     # Create and start new threads
     threads = []
@@ -856,7 +862,7 @@ def main():
             params['work_queue'].put(subsystem)
     except xrdinfo.XrdInfoError as err:
         LOGGER.error('Cannot process Global Configuration: %s', err)
-        exit(1)
+        sys.exit(1)
 
     # Block until all tasks in queue are done
     params['work_queue'].join()

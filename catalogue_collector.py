@@ -6,6 +6,7 @@ import queue
 from threading import Thread, Event, Lock
 from datetime import datetime, timedelta
 from minio import Minio
+from minio.error import ResponseError, NoSuchKey
 from io import BytesIO
 import argparse
 import hashlib
@@ -101,7 +102,7 @@ def set_params(config):
     """Configure parameters based on loaded configuration"""
     params = {
         'path': None,
-        'minio_url': None,
+        'minio': None,
         'minio_access_key': None,
         'minio_secret_key': None,
         'minio_secure': True,
@@ -129,13 +130,10 @@ def set_params(config):
     if 'output_path' in config:
         params['path'] = config['output_path']
         LOGGER.info('Configuring "path": %s', params['path'])
-    else:
-        LOGGER.error('Configuration error: Output path is not provided')
-        return None
 
     if 'minio_url' in config:
-        params['minio_url'] = config['minio_url']
-        LOGGER.info('Configuring "minio_url": %s', params['minio_url'])
+        params['minio'] = config['minio_url']
+        LOGGER.info('Configuring "minio_url": %s', params['minio'])
 
     if 'minio_access_key' in config:
         params['minio_access_key'] = config['minio_access_key']
@@ -159,6 +157,10 @@ def set_params(config):
         if params['minio_path']:
             params['minio_path'] += '/'
         LOGGER.info('Configuring "minio_path": %s', params['minio_path'])
+
+    if params['path'] is None and params['minio'] is None:
+        LOGGER.error('Configuration error: No output path or MinIO URL are provided')
+        return None
 
     if 'server_url' in config:
         params['url'] = config['server_url']
@@ -222,6 +224,14 @@ def set_params(config):
         params['filtered_months'] = config['filtered_months']
         LOGGER.info('Configuring "filtered_months": %s', params['filtered_months'])
 
+    if params['path'] is not None and params['minio'] is not None:
+        LOGGER.warning('Saving to both local and MinIO storage is not supported')
+
+    if params['minio']:
+        LOGGER.info('Using MinIO storage')
+    else:
+        LOGGER.info('Using local storage')
+
     LOGGER.info('Configuration done')
 
     return params
@@ -239,20 +249,32 @@ def make_dirs(path):
     return True
 
 
-def hash_wsdls(path):
+def hash_wsdls(path, params):
     """Find hashes of all WSDL's in directory"""
     hashes = {}
-    for file_name in os.listdir(path):
-        search_res = re.search('^(\\d+)\\.wsdl$', file_name)
-        if search_res:
-            # Reading as bytes to avoid line ending conversion
-            with open('{}/{}'.format(path, file_name), 'rb') as wsdl_file:
-                wsdl = wsdl_file.read()
-            hashes[file_name] = hashlib.md5(wsdl).hexdigest()
+    if params['minio']:
+        try:
+            wsdl_hashes_file = params['minio_client'].get_object(params['minio_bucket'], '{}_wsdl_hashes'.format(path))
+            hashes = json.loads(wsdl_hashes_file.data.decode('utf-8'))
+        except NoSuchKey:
+            for obj in params['minio_client'].list_objects(params['minio_bucket'], prefix=path, recursive=False):
+                file_name = obj.object_name[len(path):]
+                search_res = re.search('^(\\d+)\\.wsdl$', file_name)
+                if search_res:
+                    wsdl_object = params['minio_client'].get_object(params['minio_bucket'], '{}{}'.format(path, file_name))
+                    hashes[file_name] = hashlib.md5(wsdl_object.data).hexdigest()
+    else:
+        for file_name in os.listdir(path):
+            search_res = re.search('^(\\d+)\\.wsdl$', file_name)
+            if search_res:
+                # Reading as bytes to avoid line ending conversion
+                with open('{}/{}'.format(path, file_name), 'rb') as wsdl_file:
+                    wsdl = wsdl_file.read()
+                hashes[file_name] = hashlib.md5(wsdl).hexdigest()
     return hashes
 
 
-def save_wsdl(path, hashes, wsdl, wsdl_replaces):
+def save_wsdl(path, hashes, wsdl, wsdl_replaces, params):
     """Save WSDL if it does not exist yet"""
     # Replacing dynamically generated comments in WSDL to avoid new WSDL
     # creation because of comments.
@@ -270,29 +292,49 @@ def save_wsdl(path, hashes, wsdl, wsdl_replaces):
                 max_wsdl = int(search_res.group(1))
     # Creating new file
     new_file = '{}.wsdl'.format(int(max_wsdl) + 1)
-    # Writing as bytes to avoid line ending conversion
-    with open('{}/{}'.format(path, new_file), 'wb') as wsdl_file:
-        wsdl_file.write(wsdl.encode('utf-8'))
+    wsdl_binary = wsdl.encode('utf-8')
+    if params['minio']:
+        params['minio_client'].put_object(
+            params['minio_bucket'], '{}{}'.format(path, new_file),
+            BytesIO(wsdl_binary), len(wsdl_binary), content_type='text/xml')
+    else:
+        # Writing as bytes to avoid line ending conversion
+        with open('{}/{}'.format(path, new_file), 'wb') as wsdl_file:
+            wsdl_file.write(wsdl_binary)
     hashes[new_file] = wsdl_hash
     return new_file, hashes
 
 
-def hash_openapis(path):
+def hash_openapis(path, params):
     """Find hashes of all OpenAPI documents in directory"""
     hashes = {}
-    for file_name in os.listdir(path):
-        search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
-        if search_res:
-            # Reading as bytes to avoid line ending conversion
-            with open('{}/{}'.format(path, file_name), 'rb') as openapi_file:
-                openapi = openapi_file.read()
-            hashes[file_name] = hashlib.md5(openapi).hexdigest()
+    if params['minio']:
+        try:
+            openapi_hashes_file = params['minio_client'].get_object(
+                params['minio_bucket'], '{}_openapi_hashes'.format(path))
+            hashes = json.loads(openapi_hashes_file.data.decode('utf-8'))
+        except NoSuchKey:
+            for obj in params['minio_client'].list_objects(params['minio_bucket'], prefix=path, recursive=False):
+                file_name = obj.object_name[len(path):]
+                search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
+                if search_res:
+                    openapi_object = params['minio_client'].get_object(
+                        params['minio_bucket'], '{}{}'.format(path, file_name))
+                    hashes[file_name] = hashlib.md5(openapi_object.data).hexdigest()
+    else:
+        for file_name in os.listdir(path):
+            search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
+            if search_res:
+                # Reading as bytes to avoid line ending conversion
+                with open('{}/{}'.format(path, file_name), 'rb') as openapi_file:
+                    openapi = openapi_file.read()
+                hashes[file_name] = hashlib.md5(openapi).hexdigest()
     return hashes
 
 
-def save_openapi(path, hashes, wsdl, service_name, doc_type):
+def save_openapi(path, hashes, openapi, service_name, doc_type, params):
     """Save OpenAPI if it does not exist yet"""
-    openapi_hash = hashlib.md5(wsdl.encode('utf-8')).hexdigest()
+    openapi_hash = hashlib.md5(openapi.encode('utf-8')).hexdigest()
     max_openapi = -1
     for file_name in hashes.keys():
         search_res = re.search('^{}_(\\d+)\\.(yaml|json)$'.format(service_name), file_name)
@@ -304,11 +346,28 @@ def save_openapi(path, hashes, wsdl, service_name, doc_type):
                 max_openapi = int(search_res.group(1))
     # Creating new file
     new_file = '{}_{}.{}'.format(service_name, int(max_openapi) + 1, doc_type)
-    # Writing as bytes to avoid line ending conversion
-    with open('{}/{}'.format(path, new_file), 'wb') as openapi_file:
-        openapi_file.write(wsdl.encode('utf-8'))
+    openapi_binary = openapi.encode('utf-8')
+    content_type = 'text/yaml'
+    if doc_type == 'json':
+        content_type = 'application/json'
+    if params['minio']:
+        params['minio_client'].put_object(
+            params['minio_bucket'], '{}{}'.format(path, new_file),
+            BytesIO(openapi_binary), len(openapi_binary), content_type=content_type)
+    else:
+        # Writing as bytes to avoid line ending conversion
+        with open('{}/{}'.format(path, new_file), 'wb') as openapi_file:
+            openapi_file.write(openapi.encode('utf-8'))
     hashes[new_file] = openapi_hash
     return new_file, hashes
+
+
+def save_hashes(path, hashes, file_type, params):
+    hashes_binary = json.dumps(hashes, indent=2, ensure_ascii=False).encode()
+    if params['minio']:
+        params['minio_client'].put_object(
+            params['minio_bucket'], '{}_{}_hashes'.format(path, file_type),
+            BytesIO(hashes_binary), len(hashes_binary), content_type='text/xml')
 
 
 def method_item(method, status, wsdl):
@@ -363,10 +422,13 @@ def subsystem_item(subsystem, methods, services):
 
 def process_methods(subsystem, params, doc_path):
     """Function that finds SOAP methods of a subsystem"""
-    wsdl_path = '{}/{}'.format(params['path'], doc_path)
+    wsdl_path = '{}{}/'.format(params['minio_path'], doc_path)
+    if not params['minio']:
+        wsdl_path = '{}/{}'.format(params['path'], doc_path)
     try:
-        make_dirs(wsdl_path)
-        hashes = hash_wsdls(wsdl_path)
+        if not params['minio']:
+            make_dirs(wsdl_path)
+        hashes = hash_wsdls(wsdl_path, params)
     except OSError as err:
         LOGGER.warning('SOAP: %s: %s', identifier_path(subsystem), err)
         return None
@@ -417,7 +479,7 @@ def process_methods(subsystem, params, doc_path):
             continue
 
         try:
-            wsdl_name, hashes = save_wsdl(wsdl_path, hashes, wsdl, params['wsdl_replaces'])
+            wsdl_name, hashes = save_wsdl(wsdl_path, hashes, wsdl, params['wsdl_replaces'], params)
         except OSError as err:
             LOGGER.warning('SOAP: %s: %s', method_name, err)
             method_index[method_name] = method_item(method, 'ERROR', '')
@@ -441,15 +503,21 @@ def process_methods(subsystem, params, doc_path):
             LOGGER.warning(
                 'SOAP: %s - Method was not found in returned WSDL!', method_name)
             method_index[method_name] = method_item(method, 'ERROR', '')
+
+    if params['minio']:
+        save_hashes(wsdl_path, hashes, 'wsdl', params)
     return method_index
 
 
 def process_services(subsystem, params, doc_path):
     """Function that finds REST services of a subsystem"""
-    openapi_path = '{}/{}'.format(params['path'], doc_path)
+    openapi_path = '{}{}/'.format(params['minio_path'], doc_path)
+    if not params['minio']:
+        openapi_path = '{}/{}'.format(params['path'], doc_path)
     try:
-        make_dirs(openapi_path)
-        hashes = hash_openapis(openapi_path)
+        if not params['minio']:
+            make_dirs(openapi_path)
+        hashes = hash_openapis(openapi_path, params)
     except OSError as err:
         LOGGER.warning('REST: %s: %s', identifier_path(subsystem), err)
         return None
@@ -504,7 +572,7 @@ def process_services(subsystem, params, doc_path):
 
         try:
             openapi_name, hashes = save_openapi(
-                openapi_path, hashes, openapi, service[4], openapi_type)
+                openapi_path, hashes, openapi, service[4], openapi_type, params)
         except OSError as err:
             LOGGER.warning('REST: %s: %s', service_name, err)
             results.append(service_item(service, 'ERROR', '', []))
@@ -514,6 +582,8 @@ def process_services(subsystem, params, doc_path):
             service_item(service, 'OK', urlparse.quote(
                 '{}/{}'.format(doc_path, openapi_name)), endpoints))
 
+    if params['minio']:
+        save_hashes(openapi_path, hashes, 'openapi', params)
     return results
 
 
@@ -623,10 +693,16 @@ def all_results_failed(subsystems):
     return True
 
 
-def write_json(file_name, json_data):
+def write_json(file_name, json_data, params):
     """Write data to JSON file"""
-    with open(file_name, 'w') as json_file:
-        json.dump(json_data, json_file, indent=2, ensure_ascii=False)
+    if params['minio']:
+        json_binary = json.dumps(json_data, indent=2, ensure_ascii=False).encode()
+        params['minio_client'].put_object(
+            params['minio_bucket'], file_name,
+            BytesIO(json_binary), len(json_binary), content_type='application/json')
+    else:
+        with open(file_name, 'w') as json_file:
+            json.dump(json_data, json_file, indent=2, ensure_ascii=False)
 
 
 def filtered_history(json_history, params):
@@ -681,12 +757,10 @@ def process_results(params):
     formatted_time = time.strftime('%Y-%m-%d %H:%M:%S', report_time)
     suffix = time.strftime('%Y%m%d%H%M%S', report_time)
 
-    write_json('{}/index_{}.json'.format(params['path'], suffix), json_data)
-    if params['minio_url']:
-        json_binary = json.dumps(json_data, indent=2, ensure_ascii=False).encode()
-        params['minio_client'].put_object(
-            params['minio_bucket'], '{}index_{}.json'.format(params['minio_path'], suffix),
-            BytesIO(json_binary), len(json_binary), content_type='application/json')
+    if params['minio']:
+        write_json('{}index_{}.json'.format(params['minio_path'], suffix), json_data, params)
+    else:
+        write_json('{}/index_{}.json'.format(params['path'], suffix), json_data, params)
 
     json_history = []
     try:
@@ -699,18 +773,23 @@ def process_results(params):
         suffix)})
     json_history.sort(key=sort_by_time, reverse=True)
 
-    write_json('{}/history.json'.format(params['path']), json_history)
-
-    write_json('{}/filtered_history.json'.format(params['path']), filtered_history(
-        json_history, params))
+    if params['minio']:
+        write_json('{}history.json'.format(params['minio_path']), json_history, params)
+        write_json('{}filtered_history.json'.format(params['minio_path']), filtered_history(
+            json_history, params), params)
+    else:
+        write_json('{}/history.json'.format(params['path']), json_history, params)
+        write_json('{}/filtered_history.json'.format(params['path']), filtered_history(
+            json_history, params), params)
 
     # Replace index.json with latest report
-    shutil.copy(
-        '{}/index_{}.json'.format(params['path'], suffix), '{}/index.json'.format(params['path']))
-    if params['minio_url']:
+    if params['minio']:
         params['minio_client'].copy_object(
             params['minio_bucket'], '{}index.json'.format(params['minio_path']),
             '/{}/{}index_{}.json'.format(params['minio_bucket'], params['minio_path'], suffix))
+    else:
+        shutil.copy(
+            '{}/index_{}.json'.format(params['path'], suffix), '{}/index.json'.format(params['path']))
 
 
 def main():
@@ -737,12 +816,13 @@ def main():
     if params is None:
         exit(1)
 
-    if not make_dirs(params['path']):
-        exit(1)
+    if not params['minio']:
+        if not make_dirs(params['path']):
+            exit(1)
 
-    if params['minio_url']:
+    if params['minio']:
         params['minio_client'] = Minio(
-            params['minio_url'],
+            params['minio'],
             access_key=params['minio_access_key'],
             secret_key=params['minio_secret_key'],
             secure=params['minio_secure'])

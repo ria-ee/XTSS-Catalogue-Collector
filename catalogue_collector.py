@@ -769,11 +769,19 @@ def process_results(params):
         write_json('{}/index_{}.json'.format(params['path'], suffix), json_data, params)
 
     json_history = []
-    try:
-        with open('{}/history.json'.format(params['path']), 'r') as json_file:
-            json_history = json.load(json_file)
-    except IOError:
-        LOGGER.info('History file history.json not found')
+    if params['minio']:
+        try:
+            json_history_file = params['minio_client'].get_object(
+                params['minio_bucket'], '{}history.json'.format(params['minio_path']))
+            json_history = json.loads(json_history_file.data.decode('utf-8'))
+        except NoSuchKey:
+            LOGGER.info('History file history.json not found')
+    else:
+        try:
+            with open('{}/history.json'.format(params['path']), 'r') as json_file:
+                json_history = json.load(json_file)
+        except IOError:
+            LOGGER.info('History file history.json not found')
 
     json_history.append({'reportTime': formatted_time, 'reportPath': 'index_{}.json'.format(
         suffix)})

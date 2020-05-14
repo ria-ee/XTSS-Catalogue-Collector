@@ -16,6 +16,7 @@ import shutil
 import sys
 import time
 import urllib.parse as urlparse
+import urllib3
 from minio import Minio
 from minio.error import NoSuchKey
 import xrdinfo
@@ -107,6 +108,7 @@ def set_params(config):
         'minio_access_key': None,
         'minio_secret_key': None,
         'minio_secure': True,
+        'minio_ca_certs': None,
         'minio_bucket': 'catalogue',
         'minio_path': '',
         'url': None,
@@ -147,6 +149,10 @@ def set_params(config):
     if 'minio_secure' in config:
         params['minio_secure'] = config['minio_secure']
         LOGGER.info('Configuring "minio_secure": %s', params['minio_secure'])
+
+    if 'minio_ca_certs' in config:
+        params['minio_ca_certs'] = config['minio_ca_certs']
+        LOGGER.info('Configuring "minio_ca_certs": %s', params['minio_ca_certs'])
 
     if 'minio_bucket' in config:
         params['minio_bucket'] = config['minio_bucket']
@@ -236,6 +242,26 @@ def set_params(config):
     LOGGER.info('Configuration done')
 
     return params
+
+
+def prepare_minio_client(params):
+    """Creates minio client and stores that in params"""
+    if params['minio_ca_certs']:
+        http_client = urllib3.PoolManager(
+            ca_certs=params['minio_ca_certs']
+        )
+        params['minio_client'] = Minio(
+            params['minio'],
+            access_key=params['minio_access_key'],
+            secret_key=params['minio_secret_key'],
+            secure=params['minio_secure'],
+            http_client=http_client)
+    else:
+        params['minio_client'] = Minio(
+            params['minio'],
+            access_key=params['minio_access_key'],
+            secret_key=params['minio_secret_key'],
+            secure=params['minio_secure'])
 
 
 def make_dirs(path):
@@ -835,13 +861,8 @@ def main():
             sys.exit(1)
 
     if params['minio']:
-        params['minio_client'] = Minio(
-            params['minio'],
-            access_key=params['minio_access_key'],
-            secret_key=params['minio_secret_key'],
-            secure=params['minio_secure'])
+        prepare_minio_client(params)
 
-    shared_params = None
     try:
         shared_params = xrdinfo.shared_params_ss(
             addr=params['url'], instance=params['instance'], timeout=params['timeout'],

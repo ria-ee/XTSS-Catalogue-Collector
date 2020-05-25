@@ -59,6 +59,7 @@ sudo systemctl enable catalogue-collector.timer
 
 * `recreate_history.py` - This script can be used to to update history.json file when it was corrupted or when some of the reports were deleted. Usage: `python3 recreate_history.py <path to catalogue>`
 * `remove_unused.py` - This script can be used to remove WSDL files that are no longer used in X-tee catalogue. For example due to deletion of older catalogue reports. Usage: `python3 remove_unused.py <path to catalogue>`. Or to simply list unused WSDLs: `python3 remove_unused.py --only-list <path to catalogue>`
+* `clean_history.py` - This script can be used to remove old JSON index files to free up disk space. Second parameter is an ammount of latest days that will not be cleaned. Older days will be cleaned so that only the first report of the day is kept. Usage: `python3 clean_history.py <path to catalogue> <days to keep>`
 
 If after usage of `remove_unused.py` you need to also delete empty directories then execute the following command inside catalogue directory:
 ```bash

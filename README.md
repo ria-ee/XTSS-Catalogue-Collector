@@ -81,3 +81,8 @@ chmod +x mc
 ~/mc mb cat/catalogue
 ~/mc policy set download cat/catalogue
 ```
+
+To copy catalogue data to minio execute the following command:
+```bash
+~/mc cp -r EE cat/catalogue/
+```

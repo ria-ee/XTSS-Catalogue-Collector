@@ -831,6 +831,13 @@ def process_results(params):
         shutil.copy('{}/index_{}.json'.format(
             params['path'], suffix), '{}/index.json'.format(params['path']))
 
+    # Updating status
+    json_status = {'lastReport': formatted_time}
+    if params['minio']:
+        write_json('{}status.json'.format(params['minio_path']), json_status, params)
+    else:
+        write_json('{}/status.json'.format(params['path']), json_status, params)
+
 
 def main():
     """Main function"""

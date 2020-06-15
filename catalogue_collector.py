@@ -779,7 +779,7 @@ def process_results(params):
     if all_results_failed(results):
         # Skipping this version
         LOGGER.error('All subsystems failed, skipping this catalogue version!')
-        return
+        sys.exit(1)
 
     json_data = []
     for subsystem_key in sorted(results.keys()):

@@ -789,7 +789,7 @@ def process_results(params):
     if all_results_failed(results):
         # Skipping this version
         LOGGER.error('All subsystems failed, skipping this catalogue version!')
-        return
+        sys.exit(1)
 
     json_data = []
     for subsystem_key in sorted(results.keys()):
@@ -840,6 +840,13 @@ def process_results(params):
     else:
         shutil.copy('{}/index_{}.json'.format(
             params['path'], suffix), '{}/index.json'.format(params['path']))
+
+    # Updating status
+    json_status = {'lastReport': formatted_time}
+    if params['minio']:
+        write_json('{}status.json'.format(params['minio_path']), json_status, params)
+    else:
+        write_json('{}/status.json'.format(params['path']), json_status, params)
 
 
 def main():

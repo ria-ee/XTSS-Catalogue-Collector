@@ -124,6 +124,8 @@ def set_params(config):
         'filtered_hours': 24,
         'filtered_days': 30,
         'filtered_months': 12,
+        'cleanup_interval': 7,
+        'days_to_keep': 30,
         'work_queue': queue.Queue(),
         'results': {},
         'results_lock': Lock(),
@@ -230,6 +232,14 @@ def set_params(config):
     if 'filtered_months' in config and config['filtered_months'] > 0:
         params['filtered_months'] = config['filtered_months']
         LOGGER.info('Configuring "filtered_months": %s', params['filtered_months'])
+
+    if 'cleanup_interval' in config and config['cleanup_interval'] > 0:
+        params['cleanup_interval'] = config['cleanup_interval']
+        LOGGER.info('Configuring "cleanup_interval": %s', params['cleanup_interval'])
+
+    if 'days_to_keep' in config and config['days_to_keep'] > 0:
+        params['days_to_keep'] = config['days_to_keep']
+        LOGGER.info('Configuring "days_to_keep": %s', params['days_to_keep'])
 
     if params['path'] is not None and params['minio'] is not None:
         LOGGER.warning('Saving to both local and MinIO storage is not supported')
@@ -720,7 +730,7 @@ def add_filtered(filtered, item_key, report_time, history_item, min_time):
             filtered[item_key] = {'time': report_time, 'item': history_item}
 
 
-def sort_by_time(item):
+def sort_by_report_time(item):
     """A helper function for sorting, indicates which field to use"""
     return item['reportTime']
 
@@ -777,9 +787,128 @@ def filtered_history(json_history, params):
         unique_items[item['reportTime']] = item
 
     json_filtered_history = list(unique_items.values())
-    json_filtered_history.sort(key=sort_by_time, reverse=True)
+    json_filtered_history.sort(key=sort_by_report_time, reverse=True)
 
     return json_filtered_history
+
+
+def sort_by_time(item):
+    """A helper function for sorting, indicates which field to use"""
+    return item['time']
+
+
+def add_report_file(file_name, reports):
+    """Add report to reports list if filename matches"""
+    search_res = re.search(
+        '^index_(\\d{4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})\\.json$', file_name)
+    if search_res:
+        reports.append({
+            'time': datetime(
+                int(search_res.group(1)), int(search_res.group(2)),
+                int(search_res.group(3)), int(search_res.group(4)),
+                int(search_res.group(5)), int(search_res.group(6))),
+            'path': file_name})
+
+
+def get_catalogue_reports(params):
+    """Get list of reports"""
+    reports = []
+    if params['minio']:
+        for obj in params['minio_client'].list_objects(
+                params['minio_bucket'], prefix=params['minio_path'], recursive=False):
+            file_name = obj.object_name[len(params['minio_path']):]
+            add_report_file(file_name, reports)
+    else:
+        for file_name in os.listdir(params['path']):
+            add_report_file(file_name, reports)
+    reports.sort(key=sort_by_time, reverse=True)
+    return reports
+
+
+def get_reports_to_keep(reports, fresh_time):
+    """Get reports that must not be removed during cleanup"""
+    # Latest report is never deleted
+    unique_paths = {reports[0]['time']: reports[0]['path']}
+
+    filtered_items = {}
+    for report in reports:
+        if report['time'] >= fresh_time:
+            # Keeping all fresh reports
+            unique_paths[report['time']] = report['path']
+        else:
+            # Searching for the first report in a day
+            item_key = datetime(report['time'].year, report['time'].month, report['time'].day)
+            if item_key not in filtered_items or report['time'] < filtered_items[item_key]['time']:
+                filtered_items[item_key] = {'time': report['time'], 'path': report['path']}
+
+    # Adding first report of the day
+    for item in filtered_items.values():
+        unique_paths[item['time']] = item['path']
+
+    paths_to_keep = list(unique_paths.values())
+    paths_to_keep.sort()
+
+    return paths_to_keep
+
+
+def get_old_reports(params):
+    """Get old reports that need to be removed"""
+    old_reports = []
+    all_reports = get_catalogue_reports(params)
+    cur_time = datetime.today()
+    fresh_time = datetime(cur_time.year, cur_time.month, cur_time.day) - timedelta(
+        days=params['days_to_keep'])
+    paths_to_keep = get_reports_to_keep(all_reports, fresh_time)
+
+    for report in all_reports:
+        if not report['path'] in paths_to_keep:
+            old_reports.append(report['path'])
+
+    old_reports.sort()
+    return old_reports
+
+
+def start_cleanup(params):
+    """Start cleanup of old reports and documents"""
+    last_cleanup = None
+    try:
+        with open('{}/cleanup_status.json'.format(params['path']), 'r') as json_file:
+            cleanup_status = json.load(json_file)
+            last_cleanup = datetime.strptime(cleanup_status['lastCleanup'], '%Y-%m-%d %H:%M:%S')
+    except (IOError, ValueError):
+        LOGGER.info('Cleanup status not found')
+
+    if last_cleanup:
+        if datetime.today() - timedelta(days=params['cleanup_interval']) < day_start(last_cleanup):
+            LOGGER.info('Cleanup interval is not passed yet')
+            return
+
+    LOGGER.info('Starting cleanup')
+
+    # Cleanup reports
+    old_reports = get_old_reports(params)
+    if len(old_reports):
+        LOGGER.info('Removing %s old JSON reports:', len(old_reports))
+        for report_path in old_reports:
+            if params['minio']:
+                LOGGER.info('Removing %s%s', params['minio_path'], report_path)
+                params['minio_client'].remove_object(
+                    params['minio_bucket'], '{}{}'.format(params['minio_path'], report_path))
+            else:
+                LOGGER.info('Removing %s/%s', params['path'], report_path)
+                os.remove('{}/{}'.format(params['path'], report_path))
+    else:
+        LOGGER.info('No old JSON reports found in directory: %s', params['path'])
+
+    # TODO: cleanup documents
+
+    # Updating status
+    cleanup_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+    json_status = {'lastCleanup': cleanup_time}
+    if params['minio']:
+        write_json('{}cleanup_status.json'.format(params['minio_path']), json_status, params)
+    else:
+        write_json('{}/cleanup_status.json'.format(params['path']), json_status, params)
 
 
 def process_results(params):
@@ -821,7 +950,7 @@ def process_results(params):
 
     json_history.append({'reportTime': formatted_time, 'reportPath': 'index_{}.json'.format(
         suffix)})
-    json_history.sort(key=sort_by_time, reverse=True)
+    json_history.sort(key=sort_by_report_time, reverse=True)
 
     if params['minio']:
         write_json('{}history.json'.format(params['minio_path']), json_history, params)
@@ -847,6 +976,8 @@ def process_results(params):
         write_json('{}status.json'.format(params['minio_path']), json_status, params)
     else:
         write_json('{}/status.json'.format(params['path']), json_status, params)
+
+    start_cleanup(params)
 
 
 def main():

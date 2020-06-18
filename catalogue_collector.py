@@ -1025,10 +1025,6 @@ def main():
     if params['minio']:
         prepare_minio_client(params)
 
-    # TODO: remove these testing lines:
-    start_cleanup(params)
-    sys.exit(0)
-
     try:
         shared_params = xrdinfo.shared_params_ss(
             addr=params['url'], instance=params['instance'], timeout=params['timeout'],

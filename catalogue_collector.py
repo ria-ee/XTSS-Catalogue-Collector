@@ -294,13 +294,17 @@ def hash_wsdls(path, params):
                         params['minio_bucket'], '{}{}'.format(path, file_name))
                     hashes[file_name] = hashlib.md5(wsdl_object.data).hexdigest()
     else:
-        for file_name in os.listdir(path):
-            search_res = re.search('^(\\d+)\\.wsdl$', file_name)
-            if search_res:
-                # Reading as bytes to avoid line ending conversion
-                with open('{}/{}'.format(path, file_name), 'rb') as wsdl_file:
-                    wsdl = wsdl_file.read()
-                hashes[file_name] = hashlib.md5(wsdl).hexdigest()
+        try:
+            with open('{}/_wsdl_hashes'.format(params['path']), 'r') as json_file:
+                hashes = json.load(json_file)
+        except IOError:
+            for file_name in os.listdir(path):
+                search_res = re.search('^(\\d+)\\.wsdl$', file_name)
+                if search_res:
+                    # Reading as bytes to avoid line ending conversion
+                    with open('{}/{}'.format(path, file_name), 'rb') as wsdl_file:
+                        wsdl = wsdl_file.read()
+                    hashes[file_name] = hashlib.md5(wsdl).hexdigest()
     return hashes
 
 
@@ -353,13 +357,17 @@ def hash_openapis(path, params):
                         params['minio_bucket'], '{}{}'.format(path, file_name))
                     hashes[file_name] = hashlib.md5(openapi_object.data).hexdigest()
     else:
-        for file_name in os.listdir(path):
-            search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
-            if search_res:
-                # Reading as bytes to avoid line ending conversion
-                with open('{}/{}'.format(path, file_name), 'rb') as openapi_file:
-                    openapi = openapi_file.read()
-                hashes[file_name] = hashlib.md5(openapi).hexdigest()
+        try:
+            with open('{}/_openapi_hashes'.format(params['path']), 'r') as json_file:
+                hashes = json.load(json_file)
+        except IOError:
+            for file_name in os.listdir(path):
+                search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
+                if search_res:
+                    # Reading as bytes to avoid line ending conversion
+                    with open('{}/{}'.format(path, file_name), 'rb') as openapi_file:
+                        openapi = openapi_file.read()
+                    hashes[file_name] = hashlib.md5(openapi).hexdigest()
     return hashes
 
 
@@ -395,11 +403,13 @@ def save_openapi(path, hashes, openapi, service_name, doc_type, params):
 
 def save_hashes(path, hashes, file_type, params):
     """Save hashes of WSDL/OpenAPI documents (to speedup MinIO)"""
-    hashes_binary = json.dumps(hashes, indent=2, ensure_ascii=False).encode()
     if params['minio']:
+        hashes_binary = json.dumps(hashes, indent=2, ensure_ascii=False).encode()
         params['minio_client'].put_object(
             params['minio_bucket'], '{}_{}_hashes'.format(path, file_type),
             BytesIO(hashes_binary), len(hashes_binary), content_type='text/plain')
+    else:
+        write_json('{}/_{}_hashes'.format(path, file_type), hashes, params)
 
 
 def method_item(method, status, wsdl):
@@ -536,8 +546,8 @@ def process_methods(subsystem, params, doc_path):
                 'SOAP: %s - Method was not found in returned WSDL!', method_name)
             method_index[method_name] = method_item(method, 'ERROR', '')
 
-    if params['minio']:
-        save_hashes(wsdl_path, hashes, 'wsdl', params)
+    save_hashes(wsdl_path, hashes, 'wsdl', params)
+
     return method_index
 
 
@@ -614,8 +624,8 @@ def process_services(subsystem, params, doc_path):
             service_item(service, 'OK', urlparse.quote(
                 '{}/{}'.format(doc_path, openapi_name)), endpoints))
 
-    if params['minio']:
-        save_hashes(openapi_path, hashes, 'openapi', params)
+    save_hashes(openapi_path, hashes, 'openapi', params)
+
     return results
 
 

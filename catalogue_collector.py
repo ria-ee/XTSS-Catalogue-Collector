@@ -792,58 +792,63 @@ def filtered_history(json_history, params):
     return json_filtered_history
 
 
-def sort_by_time(item):
-    """A helper function for sorting, indicates which field to use"""
-    return item['time']
-
-
-def add_report_file(file_name, reports):
+def add_report_file(file_name, reports, history=False):
     """Add report to reports list if filename matches"""
     search_res = re.search(
         '^index_(\\d{4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})\\.json$', file_name)
-    if search_res:
+    if search_res and history:
         reports.append({
-            'time': datetime(
+            'reportTime': '{}-{}-{} {}:{}:{}'.format(
+                search_res.group(1), search_res.group(2),
+                search_res.group(3), search_res.group(4),
+                search_res.group(5), search_res.group(6)),
+            'reportPath': file_name})
+    elif search_res:
+        reports.append({
+            'reportTime': datetime(
                 int(search_res.group(1)), int(search_res.group(2)),
                 int(search_res.group(3)), int(search_res.group(4)),
                 int(search_res.group(5)), int(search_res.group(6))),
-            'path': file_name})
+            'reportPath': file_name})
 
 
-def get_catalogue_reports(params):
+def get_catalogue_reports(params, history=False):
     """Get list of reports"""
     reports = []
     if params['minio']:
         for obj in params['minio_client'].list_objects(
                 params['minio_bucket'], prefix=params['minio_path'], recursive=False):
             file_name = obj.object_name[len(params['minio_path']):]
-            add_report_file(file_name, reports)
+            add_report_file(file_name, reports, history=history)
     else:
         for file_name in os.listdir(params['path']):
-            add_report_file(file_name, reports)
-    reports.sort(key=sort_by_time, reverse=True)
+            add_report_file(file_name, reports, history=history)
+    reports.sort(key=sort_by_report_time, reverse=True)
     return reports
 
 
 def get_reports_to_keep(reports, fresh_time):
     """Get reports that must not be removed during cleanup"""
     # Latest report is never deleted
-    unique_paths = {reports[0]['time']: reports[0]['path']}
+    unique_paths = {reports[0]['reportTime']: reports[0]['reportPath']}
 
     filtered_items = {}
     for report in reports:
-        if report['time'] >= fresh_time:
+        if report['reportTime'] >= fresh_time:
             # Keeping all fresh reports
-            unique_paths[report['time']] = report['path']
+            unique_paths[report['reportTime']] = report['reportPath']
         else:
             # Searching for the first report in a day
-            item_key = datetime(report['time'].year, report['time'].month, report['time'].day)
-            if item_key not in filtered_items or report['time'] < filtered_items[item_key]['time']:
-                filtered_items[item_key] = {'time': report['time'], 'path': report['path']}
+            item_key = datetime(
+                report['reportTime'].year, report['reportTime'].month, report['reportTime'].day)
+            if item_key not in filtered_items \
+                    or report['reportTime'] < filtered_items[item_key]['reportTime']:
+                filtered_items[item_key] = {
+                    'reportTime': report['reportTime'], 'reportPath': report['reportPath']}
 
     # Adding first report of the day
     for item in filtered_items.values():
-        unique_paths[item['time']] = item['path']
+        unique_paths[item['reportTime']] = item['reportPath']
 
     paths_to_keep = list(unique_paths.values())
     paths_to_keep.sort()
@@ -861,8 +866,8 @@ def get_old_reports(params):
     paths_to_keep = get_reports_to_keep(all_reports, fresh_time)
 
     for report in all_reports:
-        if not report['path'] in paths_to_keep:
-            old_reports.append(report['path'])
+        if not report['reportPath'] in paths_to_keep:
+            old_reports.append(report['reportPath'])
 
     old_reports.sort()
     return old_reports
@@ -899,6 +904,15 @@ def start_cleanup(params):
                 os.remove('{}/{}'.format(params['path'], report_path))
     else:
         LOGGER.info('No old JSON reports found in directory: %s', params['path'])
+
+    # Recreating history.json
+    reports = get_catalogue_reports(params, history=True)
+    if len(reports):
+        LOGGER.info('Writing %s reports to history.json', len(reports))
+        if params['minio']:
+            write_json('{}history.json'.format(params['minio_path']), reports, params)
+        else:
+            write_json('{}/history.json'.format(params['path']), reports, params)
 
     # TODO: cleanup documents
 
@@ -1010,6 +1024,10 @@ def main():
 
     if params['minio']:
         prepare_minio_client(params)
+
+    # TODO: remove these testing lines:
+    start_cleanup(params)
+    sys.exit(0)
 
     try:
         shared_params = xrdinfo.shared_params_ss(

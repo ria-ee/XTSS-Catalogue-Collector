@@ -933,12 +933,13 @@ def get_docs_in_report(params, report_file):
                     used_docs.add('{}{}'.format(params['minio_path'], method['wsdl']))
                 else:
                     used_docs.add('{}/{}'.format(params['path'], method['wsdl']))
-        for service in system['services']:
-            if service['openapi']:
-                if params['minio']:
-                    used_docs.add('{}{}'.format(params['minio_path'], service['openapi']))
-                else:
-                    used_docs.add('{}/{}'.format(params['path'], service['openapi']))
+        if 'services' in system:
+            for service in system['services']:
+                if service['openapi']:
+                    if params['minio']:
+                        used_docs.add('{}{}'.format(params['minio_path'], service['openapi']))
+                    else:
+                        used_docs.add('{}/{}'.format(params['path'], service['openapi']))
     return used_docs
 
 

@@ -1,2 +1,5 @@
 requests==2.22.0
+pyyaml==5.2
+minio==5.0.10
+urllib3==1.25.9
 pylint

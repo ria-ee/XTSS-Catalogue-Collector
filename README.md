@@ -59,8 +59,30 @@ sudo systemctl enable catalogue-collector.timer
 
 * `recreate_history.py` - This script can be used to to update history.json file when it was corrupted or when some of the reports were deleted. Usage: `python3 recreate_history.py <path to catalogue>`
 * `remove_unused.py` - This script can be used to remove WSDL files that are no longer used in X-tee catalogue. For example due to deletion of older catalogue reports. Usage: `python3 remove_unused.py <path to catalogue>`. Or to simply list unused WSDLs: `python3 remove_unused.py --only-list <path to catalogue>`
+* `clean_history.py` - This script can be used to remove old JSON index files to free up disk space. Second parameter is an ammount of latest days that will not be cleaned. Older days will be cleaned so that only the first report of the day is kept. Usage: `python3 clean_history.py <path to catalogue> <days to keep>`
 
 If after usage of `remove_unused.py` you need to also delete empty directories then execute the following command inside catalogue directory:
 ```bash
 find . -type d -empty -delete
+```
+
+## Minio storage
+
+If `minio_url` is configured then collected data will be pushed to minio storage.
+
+To test minio locally on linux machine execute the following commands (note that you should never use the default password for production):
+```bash
+sudo mkdir -p /mnt/data
+docker run -d -p 9000:9000 --name minio1 -e "MINIO_ACCESS_KEY=minioadmin" -e "MINIO_SECRET_KEY=minioadmin" -v /mnt/data:/data minio/minio server /data
+cd
+wget https://dl.min.io/client/mc/release/linux-amd64/mc
+chmod +x mc
+~/mc config host add --quiet --api s3v4 cat http://localhost:9000 minioadmin minioadmin
+~/mc mb cat/catalogue
+~/mc policy set download cat/catalogue
+```
+
+To copy catalogue data to minio execute the following command:
+```bash
+~/mc cp -r EE cat/catalogue/
 ```

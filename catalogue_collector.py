@@ -21,6 +21,9 @@ from minio import Minio
 from minio.error import NoSuchKey
 import xrdinfo
 
+# TODO: Refactor to use os.path.join instead of '{}{}' and '{}/{}' for path joining
+#       Use common path for files params['path'], params['minio_path'] -> params['cat_path']
+
 # Default timeout for HTTP requests
 DEFAULT_TIMEOUT = 5.0
 
@@ -124,6 +127,8 @@ def set_params(config):
         'filtered_hours': 24,
         'filtered_days': 30,
         'filtered_months': 12,
+        'cleanup_interval': 7,
+        'days_to_keep': 30,
         'work_queue': queue.Queue(),
         'results': {},
         'results_lock': Lock(),
@@ -231,6 +236,14 @@ def set_params(config):
         params['filtered_months'] = config['filtered_months']
         LOGGER.info('Configuring "filtered_months": %s', params['filtered_months'])
 
+    if 'cleanup_interval' in config and config['cleanup_interval'] > 0:
+        params['cleanup_interval'] = config['cleanup_interval']
+        LOGGER.info('Configuring "cleanup_interval": %s', params['cleanup_interval'])
+
+    if 'days_to_keep' in config and config['days_to_keep'] > 0:
+        params['days_to_keep'] = config['days_to_keep']
+        LOGGER.info('Configuring "days_to_keep": %s', params['days_to_keep'])
+
     if params['path'] is not None and params['minio'] is not None:
         LOGGER.warning('Saving to both local and MinIO storage is not supported')
 
@@ -280,19 +293,14 @@ def hash_wsdls(path, params):
     """Find hashes of all WSDL's in directory"""
     hashes = {}
     if params['minio']:
-        try:
-            wsdl_hashes_file = params['minio_client'].get_object(
-                params['minio_bucket'], '{}_wsdl_hashes'.format(path))
-            hashes = json.loads(wsdl_hashes_file.data.decode('utf-8'))
-        except NoSuchKey:
-            for obj in params['minio_client'].list_objects(
-                    params['minio_bucket'], prefix=path, recursive=False):
-                file_name = obj.object_name[len(path):]
-                search_res = re.search('^(\\d+)\\.wsdl$', file_name)
-                if search_res:
-                    wsdl_object = params['minio_client'].get_object(
-                        params['minio_bucket'], '{}{}'.format(path, file_name))
-                    hashes[file_name] = hashlib.md5(wsdl_object.data).hexdigest()
+        for obj in params['minio_client'].list_objects(
+                params['minio_bucket'], prefix=path, recursive=False):
+            file_name = obj.object_name[len(path):]
+            search_res = re.search('^(\\d+)\\.wsdl$', file_name)
+            if search_res:
+                wsdl_object = params['minio_client'].get_object(
+                    params['minio_bucket'], '{}{}'.format(path, file_name))
+                hashes[file_name] = hashlib.md5(wsdl_object.data).hexdigest()
     else:
         for file_name in os.listdir(path):
             search_res = re.search('^(\\d+)\\.wsdl$', file_name)
@@ -301,6 +309,24 @@ def hash_wsdls(path, params):
                 with open('{}/{}'.format(path, file_name), 'rb') as wsdl_file:
                     wsdl = wsdl_file.read()
                 hashes[file_name] = hashlib.md5(wsdl).hexdigest()
+    return hashes
+
+
+def get_wsdl_hashes(path, params):
+    """Get WSDL hashes in a directory"""
+    if params['minio']:
+        try:
+            wsdl_hashes_file = params['minio_client'].get_object(
+                params['minio_bucket'], '{}_wsdl_hashes'.format(path))
+            hashes = json.loads(wsdl_hashes_file.data.decode('utf-8'))
+        except NoSuchKey:
+            hashes = hash_wsdls(path, params)
+    else:
+        try:
+            with open('{}/_wsdl_hashes'.format(params['path']), 'r') as json_file:
+                hashes = json.load(json_file)
+        except IOError:
+            hashes = hash_wsdls(path, params)
     return hashes
 
 
@@ -339,19 +365,14 @@ def hash_openapis(path, params):
     """Find hashes of all OpenAPI documents in directory"""
     hashes = {}
     if params['minio']:
-        try:
-            openapi_hashes_file = params['minio_client'].get_object(
-                params['minio_bucket'], '{}_openapi_hashes'.format(path))
-            hashes = json.loads(openapi_hashes_file.data.decode('utf-8'))
-        except NoSuchKey:
-            for obj in params['minio_client'].list_objects(
-                    params['minio_bucket'], prefix=path, recursive=False):
-                file_name = obj.object_name[len(path):]
-                search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
-                if search_res:
-                    openapi_object = params['minio_client'].get_object(
-                        params['minio_bucket'], '{}{}'.format(path, file_name))
-                    hashes[file_name] = hashlib.md5(openapi_object.data).hexdigest()
+        for obj in params['minio_client'].list_objects(
+                params['minio_bucket'], prefix=path, recursive=False):
+            file_name = obj.object_name[len(path):]
+            search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
+            if search_res:
+                openapi_object = params['minio_client'].get_object(
+                    params['minio_bucket'], '{}{}'.format(path, file_name))
+                hashes[file_name] = hashlib.md5(openapi_object.data).hexdigest()
     else:
         for file_name in os.listdir(path):
             search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
@@ -360,6 +381,24 @@ def hash_openapis(path, params):
                 with open('{}/{}'.format(path, file_name), 'rb') as openapi_file:
                     openapi = openapi_file.read()
                 hashes[file_name] = hashlib.md5(openapi).hexdigest()
+    return hashes
+
+
+def get_openapi_hashes(path, params):
+    """Get OpenAPI hashes in a directory"""
+    if params['minio']:
+        try:
+            openapi_hashes_file = params['minio_client'].get_object(
+                params['minio_bucket'], '{}_openapi_hashes'.format(path))
+            hashes = json.loads(openapi_hashes_file.data.decode('utf-8'))
+        except NoSuchKey:
+            hashes = hash_openapis(path, params)
+    else:
+        try:
+            with open('{}/_openapi_hashes'.format(params['path']), 'r') as json_file:
+                hashes = json.load(json_file)
+        except IOError:
+            hashes = hash_openapis(path, params)
     return hashes
 
 
@@ -395,11 +434,13 @@ def save_openapi(path, hashes, openapi, service_name, doc_type, params):
 
 def save_hashes(path, hashes, file_type, params):
     """Save hashes of WSDL/OpenAPI documents (to speedup MinIO)"""
-    hashes_binary = json.dumps(hashes, indent=2, ensure_ascii=False).encode()
     if params['minio']:
+        hashes_binary = json.dumps(hashes, indent=2, ensure_ascii=False).encode()
         params['minio_client'].put_object(
             params['minio_bucket'], '{}_{}_hashes'.format(path, file_type),
             BytesIO(hashes_binary), len(hashes_binary), content_type='text/plain')
+    else:
+        write_json('{}/_{}_hashes'.format(path, file_type), hashes, params)
 
 
 def method_item(method, status, wsdl):
@@ -460,7 +501,7 @@ def process_methods(subsystem, params, doc_path):
     try:
         if not params['minio']:
             make_dirs(wsdl_path)
-        hashes = hash_wsdls(wsdl_path, params)
+        hashes = get_wsdl_hashes(wsdl_path, params)
     except OSError as err:
         LOGGER.warning('SOAP: %s: %s', identifier_path(subsystem), err)
         return None
@@ -536,8 +577,8 @@ def process_methods(subsystem, params, doc_path):
                 'SOAP: %s - Method was not found in returned WSDL!', method_name)
             method_index[method_name] = method_item(method, 'ERROR', '')
 
-    if params['minio']:
-        save_hashes(wsdl_path, hashes, 'wsdl', params)
+    save_hashes(wsdl_path, hashes, 'wsdl', params)
+
     return method_index
 
 
@@ -549,7 +590,7 @@ def process_services(subsystem, params, doc_path):
     try:
         if not params['minio']:
             make_dirs(openapi_path)
-        hashes = hash_openapis(openapi_path, params)
+        hashes = get_openapi_hashes(openapi_path, params)
     except OSError as err:
         LOGGER.warning('REST: %s: %s', identifier_path(subsystem), err)
         return None
@@ -614,8 +655,8 @@ def process_services(subsystem, params, doc_path):
             service_item(service, 'OK', urlparse.quote(
                 '{}/{}'.format(doc_path, openapi_name)), endpoints))
 
-    if params['minio']:
-        save_hashes(openapi_path, hashes, 'openapi', params)
+    save_hashes(openapi_path, hashes, 'openapi', params)
+
     return results
 
 
@@ -710,7 +751,7 @@ def add_filtered(filtered, item_key, report_time, history_item, min_time):
             filtered[item_key] = {'time': report_time, 'item': history_item}
 
 
-def sort_by_time(item):
+def sort_by_report_time(item):
     """A helper function for sorting, indicates which field to use"""
     return item['reportTime']
 
@@ -767,9 +808,265 @@ def filtered_history(json_history, params):
         unique_items[item['reportTime']] = item
 
     json_filtered_history = list(unique_items.values())
-    json_filtered_history.sort(key=sort_by_time, reverse=True)
+    json_filtered_history.sort(key=sort_by_report_time, reverse=True)
 
     return json_filtered_history
+
+
+def add_report_file(file_name, reports, history=False):
+    """Add report to reports list if filename matches"""
+    search_res = re.search(
+        '^index_(\\d{4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})\\.json$', file_name)
+    if search_res and history:
+        reports.append({
+            'reportTime': '{}-{}-{} {}:{}:{}'.format(
+                search_res.group(1), search_res.group(2),
+                search_res.group(3), search_res.group(4),
+                search_res.group(5), search_res.group(6)),
+            'reportPath': file_name})
+    elif search_res:
+        reports.append({
+            'reportTime': datetime(
+                int(search_res.group(1)), int(search_res.group(2)),
+                int(search_res.group(3)), int(search_res.group(4)),
+                int(search_res.group(5)), int(search_res.group(6))),
+            'reportPath': file_name})
+
+
+def get_catalogue_reports(params, history=False):
+    """Get list of reports"""
+    reports = []
+    if params['minio']:
+        for obj in params['minio_client'].list_objects(
+                params['minio_bucket'], prefix=params['minio_path'], recursive=False):
+            file_name = obj.object_name[len(params['minio_path']):]
+            add_report_file(file_name, reports, history=history)
+    else:
+        for file_name in os.listdir(params['path']):
+            add_report_file(file_name, reports, history=history)
+    reports.sort(key=sort_by_report_time, reverse=True)
+    return reports
+
+
+def get_reports_to_keep(reports, fresh_time):
+    """Get reports that must not be removed during cleanup"""
+    # Latest report is never deleted
+    unique_paths = {reports[0]['reportTime']: reports[0]['reportPath']}
+
+    filtered_items = {}
+    for report in reports:
+        if report['reportTime'] >= fresh_time:
+            # Keeping all fresh reports
+            unique_paths[report['reportTime']] = report['reportPath']
+        else:
+            # Searching for the first report in a day
+            item_key = datetime(
+                report['reportTime'].year, report['reportTime'].month, report['reportTime'].day)
+            if item_key not in filtered_items \
+                    or report['reportTime'] < filtered_items[item_key]['reportTime']:
+                filtered_items[item_key] = {
+                    'reportTime': report['reportTime'], 'reportPath': report['reportPath']}
+
+    # Adding first report of the day
+    for item in filtered_items.values():
+        unique_paths[item['reportTime']] = item['reportPath']
+
+    paths_to_keep = list(unique_paths.values())
+    paths_to_keep.sort()
+
+    return paths_to_keep
+
+
+def get_old_reports(params):
+    """Get old reports that need to be removed"""
+    old_reports = []
+    all_reports = get_catalogue_reports(params)
+    cur_time = datetime.today()
+    fresh_time = datetime(cur_time.year, cur_time.month, cur_time.day) - timedelta(
+        days=params['days_to_keep'])
+    paths_to_keep = get_reports_to_keep(all_reports, fresh_time)
+
+    for report in all_reports:
+        if not report['reportPath'] in paths_to_keep:
+            old_reports.append(report['reportPath'])
+
+    old_reports.sort()
+    return old_reports
+
+
+def get_reports_set(params):
+    """Get set of reports"""
+    reports = set()
+    if params['minio']:
+        for obj in params['minio_client'].list_objects(
+                params['minio_bucket'], prefix=params['minio_path'], recursive=False):
+            file_name = obj.object_name[len(params['minio_path']):]
+            search_res = re.search(
+                '^index_(\\d{4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})\\.json$',
+                file_name)
+            if search_res:
+                reports.add(file_name)
+    else:
+        for file_name in os.listdir(params['path']):
+            search_res = re.search(
+                '^index_(\\d{4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})\\.json$',
+                file_name)
+            if search_res:
+                reports.add(file_name)
+    return reports
+
+
+def get_docs_in_report(params, report_file):
+    if params['minio']:
+        obj = params['minio_client'].get_object(
+            params['minio_bucket'], '{}{}'.format(params['minio_path'], report_file))
+        report_data = json.loads(obj.data.decode('utf-8'))
+    else:
+        with open('{}/{}'.format(params['path'], report_file), 'r') as json_file:
+            report_data = json.load(json_file)
+
+    used_docs = set()
+    for system in report_data:
+        for method in system['methods']:
+            if method['wsdl']:
+                if params['minio']:
+                    used_docs.add('{}{}'.format(params['minio_path'], method['wsdl']))
+                else:
+                    used_docs.add('{}/{}'.format(params['path'], method['wsdl']))
+        if 'services' in system:
+            for service in system['services']:
+                if service['openapi']:
+                    if params['minio']:
+                        used_docs.add('{}{}'.format(params['minio_path'], service['openapi']))
+                    else:
+                        used_docs.add('{}/{}'.format(params['path'], service['openapi']))
+    return used_docs
+
+
+def add_doc_file(file_name, path, docs):
+    search_res = re.search('^\\d+\\.wsdl$', file_name)
+    if search_res:
+        docs.add(os.path.join(path, file_name))
+    search_res = re.search('^.+_(\\d+)\\.(yaml|json)$', file_name)
+    if search_res:
+        docs.add(os.path.join(path, file_name))
+
+
+def get_available_docs(params):
+    available_docs = set()
+    if params['minio']:
+        for obj in params['minio_client'].list_objects(
+                params['minio_bucket'],
+                prefix=os.path.join(params['minio_path'], params['instance']),
+                recursive=True):
+            add_doc_file(
+                os.path.basename(obj.object_name), os.path.dirname(obj.object_name), available_docs)
+    else:
+        for root, _, files in os.walk(os.path.join(params['path'], params['instance'])):
+            for file_name in files:
+                add_doc_file(file_name, root, available_docs)
+    return available_docs
+
+
+def get_unused_docs(params):
+    reports = get_reports_set(params)
+    if not reports:
+        LOGGER.warning('Did not find any reports!')
+        return set()
+
+    used_docs = set()
+    for report_file in reports:
+        used_docs = used_docs.union(get_docs_in_report(params, report_file))
+    if not used_docs:
+        LOGGER.info('Did not find any documents in reports. This is might be an error.')
+        return set()
+
+    available_docs = get_available_docs(params)
+    return available_docs - used_docs
+
+
+def start_cleanup(params):
+    """Start cleanup of old reports and documents"""
+    last_cleanup = None
+    if params['minio']:
+        try:
+            json_file = params['minio_client'].get_object(
+                params['minio_bucket'], '{}cleanup_status.json'.format(params['minio_path']))
+            cleanup_status = json.loads(json_file.data.decode('utf-8'))
+            last_cleanup = datetime.strptime(cleanup_status['lastCleanup'], '%Y-%m-%d %H:%M:%S')
+        except (NoSuchKey, ValueError):
+            LOGGER.info('Cleanup status not found')
+    else:
+        try:
+            with open('{}/cleanup_status.json'.format(params['path']), 'r') as json_file:
+                cleanup_status = json.load(json_file)
+                last_cleanup = datetime.strptime(cleanup_status['lastCleanup'], '%Y-%m-%d %H:%M:%S')
+        except (IOError, ValueError):
+            LOGGER.info('Cleanup status not found')
+
+    if last_cleanup:
+        if datetime.today() - timedelta(days=params['cleanup_interval']) < day_start(last_cleanup):
+            LOGGER.info('Cleanup interval is not passed yet')
+            return
+
+    LOGGER.info('Starting cleanup')
+
+    # Cleanup reports
+    old_reports = get_old_reports(params)
+    if len(old_reports):
+        LOGGER.info('Removing %s old JSON reports:', len(old_reports))
+        for report_path in old_reports:
+            if params['minio']:
+                LOGGER.info('Removing %s%s', params['minio_path'], report_path)
+                params['minio_client'].remove_object(
+                    params['minio_bucket'], '{}{}'.format(params['minio_path'], report_path))
+            else:
+                LOGGER.info('Removing %s/%s', params['path'], report_path)
+                os.remove('{}/{}'.format(params['path'], report_path))
+
+        # Recreating history.json
+        reports = get_catalogue_reports(params, history=True)
+        if len(reports):
+            LOGGER.info('Writing %s reports to history.json', len(reports))
+            if params['minio']:
+                write_json('{}history.json'.format(params['minio_path']), reports, params)
+            else:
+                write_json('{}/history.json'.format(params['path']), reports, params)
+    else:
+        LOGGER.info('No old JSON reports found in directory: %s', params['path'])
+
+
+    # Cleanup documents
+    unused_docs = get_unused_docs(params)
+    changed_dirs = set()
+    if unused_docs:
+        LOGGER.info('Removing {} unused document(s):'.format(len(unused_docs)))
+        for doc_path in unused_docs:
+            LOGGER.info('Removing %s', doc_path)
+            if params['minio']:
+                params['minio_client'].remove_object(params['minio_bucket'], doc_path)
+            else:
+                os.remove(doc_path)
+            changed_dirs.add(os.path.dirname(doc_path))
+    else:
+        LOGGER.info('No unused documents found')
+
+    # Recreating document hashes cache
+    for doc_path in changed_dirs:
+        LOGGER.info('Recreating WSDL hashes cache for %s', doc_path)
+        hashes = get_wsdl_hashes(doc_path, params)
+        save_hashes(doc_path, hashes, 'wsdl', params)
+        LOGGER.info('Recreating OpenAPI hashes cache for %s', doc_path)
+        hashes = get_openapi_hashes(doc_path, params)
+        save_hashes(doc_path, hashes, 'openapi', params)
+
+    # Updating status
+    cleanup_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+    json_status = {'lastCleanup': cleanup_time}
+    if params['minio']:
+        write_json('{}cleanup_status.json'.format(params['minio_path']), json_status, params)
+    else:
+        write_json('{}/cleanup_status.json'.format(params['path']), json_status, params)
 
 
 def process_results(params):
@@ -779,7 +1076,7 @@ def process_results(params):
     if all_results_failed(results):
         # Skipping this version
         LOGGER.error('All subsystems failed, skipping this catalogue version!')
-        return
+        sys.exit(1)
 
     json_data = []
     for subsystem_key in sorted(results.keys()):
@@ -811,7 +1108,7 @@ def process_results(params):
 
     json_history.append({'reportTime': formatted_time, 'reportPath': 'index_{}.json'.format(
         suffix)})
-    json_history.sort(key=sort_by_time, reverse=True)
+    json_history.sort(key=sort_by_report_time, reverse=True)
 
     if params['minio']:
         write_json('{}history.json'.format(params['minio_path']), json_history, params)
@@ -830,6 +1127,15 @@ def process_results(params):
     else:
         shutil.copy('{}/index_{}.json'.format(
             params['path'], suffix), '{}/index.json'.format(params['path']))
+
+    # Updating status
+    json_status = {'lastReport': formatted_time}
+    if params['minio']:
+        write_json('{}status.json'.format(params['minio_path']), json_status, params)
+    else:
+        write_json('{}/status.json'.format(params['path']), json_status, params)
+
+    start_cleanup(params)
 
 
 def main():

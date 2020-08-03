@@ -47,6 +47,8 @@
   "filtered_hours": 24,
   "filtered_days": 30,
   "filtered_months": 12,
+  "cleanup_interval": 7,
+  "days_to_keep": 30,
   "logging-config": {
     "version": 1,
     "disable_existing_loggers": true,

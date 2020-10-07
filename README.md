@@ -8,6 +8,13 @@ Create a configuration file for your X-Road instance using an example configurat
 
 Configuration parameters:
 * `output_path` - output directory for collected data;
+* `minio_url` - address of your MinIO server;
+* `minio_access_key` - access key for MinIO;
+* `minio_secret_key` - secret key for MinIO;
+* `minio_secure` - boolean flag indicating if secure HTTPS connection is used for MinIO;
+* `minio_ca_certs` - CA certificate for validating MinIO certificate;
+* `minio_bucket` - MinIO bucket used for file storage;
+* `minio_path` - path inside MinIO bucket used for file storage;
 * `server_url` - address of your security server;
 * `client` - array of X-Road client identifiers;
 * `instance` - X-Road instance to collect data from;
@@ -19,6 +26,13 @@ Configuration parameters:
 * `wsdl_replaces` - replace metadata like creation timestamp in WSDLs to avoid duplicates;
 * `excluded_member_codes` - exclude certain members who are permanently in faulty state or should not be queried for any other reasons;
 * `excluded_subsystem_codes` - exclude certain members who are permanently in faulty state or should not be queried for any other reasons;
+* `filtered_hours` - amount of parallel threads to use;
+* `filtered_days` - amount of parallel threads to use;
+* `filtered_months` - amount of parallel threads to use;
+* `cleanup_interval` - interval in days when automatic removal of older reports will be performed. During the cleanup only the first report of each day is preserved and extra reports are deleted;
+* `days_to_keep` - amount of latest days to protect against cleanup;
+
+
 * `logging-config` - logging configuration passed to logging.config.dictConfig(). You can read more about Python3 logging here: [https://docs.python.org/3/library/logging.config.html](https://docs.python.org/3/library/logging.config.html).
 
 ## Installing python venv

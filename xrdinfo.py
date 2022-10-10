@@ -4,11 +4,11 @@
 
 __all__ = [
     'XrdInfoError', 'RequestTimeoutError', 'SoapFaultError', 'NotOpenapiServiceError',
-    'OpenapiReadError', 'shared_params_ss', 'shared_params_cs', 'subsystems',
+    'OpenapiReadError', 'shared_params_ss', 'shared_params_cs', 'members', 'subsystems',
     'subsystems_with_membername', 'registered_subsystems', 'subsystems_with_server', 'servers',
     'addr_ips', 'servers_ips', 'methods', 'methods_rest', 'wsdl', 'wsdl_methods', 'openapi',
     'openapi_endpoints', 'identifier', 'identifier_parts']
-__version__ = '1.1'
+__version__ = '1.2'
 __author__ = 'Vitali Stupin'
 
 import json
@@ -216,6 +216,21 @@ def shared_params_cs(addr, timeout=DEFAULT_TIMEOUT, verify=False, cert=None):
         return shared_params_response.text
     except requests.exceptions.Timeout as err:
         raise RequestTimeoutError(err)
+    except Exception as err:
+        raise XrdInfoError(err)
+
+
+def members(shared_params):
+    """List Members in shared_params.
+    Return tuple: (xRoadInstance, memberClass, memberCode).
+    """
+    try:
+        root = ElementTree.fromstring(shared_params)
+        instance = '' + root.find('./instanceIdentifier').text
+        for member in root.findall('./member'):
+            member_class = '' + member.find('./memberClass/code').text
+            member_code = '' + member.find('./memberCode').text
+            yield instance, member_class, member_code
     except Exception as err:
         raise XrdInfoError(err)
 
@@ -607,9 +622,10 @@ def openapi_endpoints(openapi_doc):
     try:
         for path, operations in data['paths'].items():
             for verb, operation in operations.items():
-                results.append({
-                    'verb': verb, 'path': path, 'summary': operation.get('summary', ''),
-                    'description': operation.get('description', '')})
+                if (verb in ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']):
+                    results.append({
+                        'verb': verb, 'path': path, 'summary': operation.get('summary', ''),
+                        'description': operation.get('description', '')})
     except Exception:
         raise XrdInfoError('Endpoints not found')
 

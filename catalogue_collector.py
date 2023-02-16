@@ -2,6 +2,9 @@
 
 """This is a module for collection of X-Road services information."""
 
+__version__ = '1.2.0'
+__author__ = 'Vitali Stupin'
+
 import queue
 from threading import Thread, Event, Lock
 from datetime import datetime, timedelta

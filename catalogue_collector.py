@@ -2,7 +2,7 @@
 
 """This is a module for collection of X-Road services information."""
 
-__version__ = '1.2.0'
+__version__ = '1.2.1'
 __author__ = 'Vitali Stupin'
 
 import queue
@@ -21,7 +21,7 @@ import time
 import urllib.parse as urlparse
 import urllib3
 from minio import Minio
-from minio.error import NoSuchKey
+from minio.error import S3Error
 import xrdinfo
 
 # TODO: Refactor to use os.path.join instead of '{}{}' and '{}/{}' for path joining
@@ -322,7 +322,7 @@ def get_wsdl_hashes(path, params):
             wsdl_hashes_file = params['minio_client'].get_object(
                 params['minio_bucket'], '{}_wsdl_hashes'.format(path))
             hashes = json.loads(wsdl_hashes_file.data.decode('utf-8'))
-        except NoSuchKey:
+        except S3Error:
             hashes = hash_wsdls(path, params)
     else:
         try:
@@ -394,7 +394,7 @@ def get_openapi_hashes(path, params):
             openapi_hashes_file = params['minio_client'].get_object(
                 params['minio_bucket'], '{}_openapi_hashes'.format(path))
             hashes = json.loads(openapi_hashes_file.data.decode('utf-8'))
-        except NoSuchKey:
+        except S3Error:
             hashes = hash_openapis(path, params)
     else:
         try:
@@ -666,7 +666,7 @@ def process_services(subsystem, params, doc_path):
 def worker(params):
     """Main function for worker threads"""
     while True:
-        # Checking periodically if it is the time to gracefully shutdown
+        # Checking periodically if it is the time to gracefully shut down
         # the worker.
         try:
             subsystem = params['work_queue'].get(True, 0.1)
@@ -997,7 +997,7 @@ def start_cleanup(params):
                 params['minio_bucket'], '{}cleanup_status.json'.format(params['minio_path']))
             cleanup_status = json.loads(json_file.data.decode('utf-8'))
             last_cleanup = datetime.strptime(cleanup_status['lastCleanup'], '%Y-%m-%d %H:%M:%S')
-        except (NoSuchKey, ValueError):
+        except (S3Error, ValueError):
             LOGGER.info('Cleanup status not found')
     else:
         try:
@@ -1037,7 +1037,6 @@ def start_cleanup(params):
                 write_json('{}/history.json'.format(params['path']), reports, params)
     else:
         LOGGER.info('No old JSON reports found in directory: %s', params['path'])
-
 
     # Cleanup documents
     unused_docs = get_unused_docs(params)
@@ -1100,7 +1099,7 @@ def process_results(params):
             json_history_file = params['minio_client'].get_object(
                 params['minio_bucket'], '{}history.json'.format(params['minio_path']))
             json_history = json.loads(json_history_file.data.decode('utf-8'))
-        except NoSuchKey:
+        except S3Error:
             LOGGER.info('History file history.json not found')
     else:
         try:
